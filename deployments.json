@@ -1,4 +1,8 @@
 {
+    "mainnet": {
+        "redeemer": "EQA5RO-O-WX45P3udSgedZ7ph4vw5CZoNwKEUE-wR7VMK1iE",
+        "collection": "EQDuHRGMmO4Ie4lr34yGSDOEYeDbpogKrbDA1uDBO8m1gGEm"
+    },
     "testnet": {
         "redeemer": "EQCc6LhCfX_Judd2xEy4C6D3flDrIZytLmWcqSaCM_M_Wgzl",
         "collection": "EQCHQcTLFLmRmGpZ_rgfJDm-0CnOnSIk_sjbzMkh4IltSV3r"

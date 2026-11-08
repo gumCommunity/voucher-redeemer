@@ -3,7 +3,7 @@
 TON smart contract (FunC) that exchanges [Gumcoin NFT vouchers](https://github.com/gumCommunity/nft-voucher) for GUM,
 plus a web page where users connect their wallet (TON Connect) and redeem vouchers.
 
-**Redeem page:** https://gumcommunity.github.io/voucher-redeemer/
+**Redeem page (mainnet):** https://gumcommunity.github.io/voucher-redeemer/
 
 - A user sends a voucher NFT to the redeemer and receives **10 000 / 5 000 / 1 000 GUM** depending on the voucher kind.
 - The NFT is burned; the TON stored in the NFT goes to the redeemer. The user pays only network fees (~0.006 TON):
@@ -114,9 +114,18 @@ Scripts verify that the address you enter is really the redeemer (not its GUM wa
 address saved in `deployments.json` by default. **Never send GUM to the redeemer's GUM wallet address**: jettons sent there
 are lost; deposit only with `depositGum` (or a jetton transfer to the redeemer address with `forward_ton_amount > 0`).
 
-Current deployments are listed in [`deployments.json`](deployments.json). The testnet contracts there and the live redeem
-page were deployed before the 2026-11-08 audit fixes and run the old code; redeploy the collection, minter and redeemer
-and then the page to test the current version.
+Current deployments are listed in [`deployments.json`](deployments.json).
+
+**Mainnet** (2026-11-08, code of `7d56b7c`, redeemer code hash `06d7f4c0…c97e`):
+
+| | Address |
+|---|---|
+| redeemer | [`EQA5RO-O-WX45P3udSgedZ7ph4vw5CZoNwKEUE-wR7VMK1iE`](https://tonviewer.com/EQA5RO-O-WX45P3udSgedZ7ph4vw5CZoNwKEUE-wR7VMK1iE) |
+| its GUM wallet (do not send GUM here) | `EQAfhSvQV3_TRYiPICpO1ksYaTWsWCXneBflye-QDh4QvVV2` |
+| voucher collection | [`EQDuHRGMmO4Ie4lr34yGSDOEYeDbpogKrbDA1uDBO8m1gGEm`](https://tonviewer.com/EQDuHRGMmO4Ie4lr34yGSDOEYeDbpogKrbDA1uDBO8m1gGEm) |
+
+The live redeem page works with these mainnet contracts. The testnet contracts in `deployments.json` were deployed
+before the 2026-11-08 audit fixes and run the old code.
 
 **Deployment order:** first the collection from [nft-voucher](https://github.com/gumCommunity/nft-voucher), then the redeemer.
 `deployRedeemer` checks on-chain that the pinned item code matches the collection before deploying anything.
