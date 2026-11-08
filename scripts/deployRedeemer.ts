@@ -4,6 +4,7 @@ import { loadNftItemCode } from '../wrappers/nftVoucherCode';
 import { VoucherRedeemer } from '../wrappers/VoucherRedeemer';
 import { JettonMaster } from '../wrappers/Jetton';
 import { VOUCHER_KINDS, gumMasterFor, toGum } from './config';
+import { saveDeployment } from './redeemerAccess';
 
 export async function run(provider: NetworkProvider) {
     const ui = provider.ui();
@@ -40,7 +41,8 @@ export async function run(provider: NetworkProvider) {
     const gumWallet = await provider.open(JettonMaster.createFromAddress(gumMaster)).getWalletAddress(redeemer.address);
     await redeemer.sendSetJettonWallet(provider.sender(), gumWallet);
 
-    ui.write(`Redeemer deployed:   ${redeemer.address.toString()}`);
-    ui.write(`Its GUM wallet:      ${gumWallet.toString()}`);
+    saveDeployment(provider.network(), { redeemer: redeemer.address.toString(), collection: collection.toString() });
+    ui.write(`Redeemer deployed:   ${redeemer.address.toString()}   (saved to deployments.json)`);
+    ui.write(`Its GUM wallet:      ${gumWallet.toString()}   (do NOT send GUM here, send to the redeemer)`);
     ui.write('Next: npx blueprint run depositGum');
 }

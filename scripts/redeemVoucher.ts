@@ -2,13 +2,14 @@ import { toNano } from '@ton/core';
 import { NetworkProvider } from '@ton/blueprint';
 import { NftVoucherItem } from '../wrappers/NftVoucherItem';
 import { REDEEM_FORWARD_AMOUNT } from '../wrappers/VoucherRedeemer';
+import { pickRedeemer } from './redeemerAccess';
 
 // What a user does: send the voucher NFT to the redeemer with forward_amount.
 // The same can be done from any wallet that allows setting forward amount (or from your dApp).
 export async function run(provider: NetworkProvider) {
     const ui = provider.ui();
     const nft = provider.open(NftVoucherItem.createFromAddress(await ui.inputAddress('Voucher (NFT) address')));
-    const redeemer = await ui.inputAddress('Redeemer address');
+    const { address: redeemer } = await pickRedeemer(provider);
 
     await nft.sendTransfer(provider.sender(), {
         newOwner: redeemer,

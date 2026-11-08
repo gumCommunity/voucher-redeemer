@@ -1,13 +1,12 @@
 import { NetworkProvider } from '@ton/blueprint';
 import { toNano } from '@ton/core';
-import { VoucherRedeemer } from '../wrappers/VoucherRedeemer';
 import { fromGum, toGum } from './config';
+import { pickRedeemer } from './redeemerAccess';
 
 // Owner panel: status, withdraw TON / GUM, pause, change GUM amount of a kind, rescue NFT.
 export async function run(provider: NetworkProvider) {
     const ui = provider.ui();
-    const redeemer = provider.open(VoucherRedeemer.createFromAddress(await ui.inputAddress('Redeemer address')));
-    const data = await redeemer.getRedeemerData();
+    const { redeemer, data } = await pickRedeemer(provider, undefined, false);
     const ton = (await provider.provider(redeemer.address).getState()).balance;
 
     ui.write(`Owner:          ${data.owner.toString()}`);

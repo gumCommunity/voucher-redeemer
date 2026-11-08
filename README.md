@@ -85,11 +85,17 @@ npm run build
 npm test
 
 # voucher amounts per kind: scripts/config.ts
-npx blueprint run deployRedeemer --testnet     # asks for the collection address
-npx blueprint run depositGum --testnet         # from the wallet that holds GUM
+npx blueprint run deployRedeemer --testnet     # asks for the collection address, saves addresses to deployments.json
+npx blueprint run depositGum --testnet         # from the wallet that holds GUM; asks for confirmation
 npx blueprint run redeemVoucher --testnet      # redeem as a user
 npx blueprint run manageRedeemer --testnet     # status, withdraw TON/GUM, pause, amounts, rescue
 ```
+
+Scripts verify that the address you enter is really the redeemer (not its GUM wallet or the GUM master) and offer the
+address saved in `deployments.json` by default. **Never send GUM to the redeemer's GUM wallet address**: jettons sent there
+are lost; deposit only with `depositGum` (or a jetton transfer to the redeemer address with `forward_ton_amount > 0`).
+
+Current deployments are listed in [`deployments.json`](deployments.json).
 
 **Deployment order:** first the collection from [nft-voucher](https://github.com/gumCommunity/nft-voucher), then the redeemer.
 `deployRedeemer` checks on-chain that the pinned item code matches the collection.
