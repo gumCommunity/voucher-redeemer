@@ -43,7 +43,8 @@ export async function getRedeemerState(redeemer: string): Promise<RedeemerState>
 }
 
 export async function getDenomination(redeemer: string, suffix: string): Promise<bigint> {
-    return num((await runGet(redeemer, 'get_denomination', [contentHash(suffix).toString()]))[0]);
+    // tonapi parses big integers (int257) only as 0x-prefixed hex
+    return num((await runGet(redeemer, 'get_denomination', ['0x' + contentHash(suffix).toString(16)]))[0]);
 }
 
 export type NftData = { owner: Address | null; burned: boolean; contentSuffix: string };
