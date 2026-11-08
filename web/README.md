@@ -16,7 +16,7 @@ Settings are build-time variables in `web/.env.local` (copy `.env.example`):
 | `VITE_NETWORK` | `testnet` or `mainnet` |
 | `VITE_REDEEMER_ADDRESS` | redeemer address (printed by `deployRedeemer`) |
 | `VITE_COLLECTION_ADDRESS` | voucher collection address |
-| `VITE_TONAPI_KEY` | optional tonapi.io client key; without it tonapi allows ~1 request/s and the page waits and retries |
+| `VITE_TONAPI_KEY` | optional tonapi.io client key; without it tonapi allows ~1 request/s and the page waits and retries. The key is built into the public JavaScript, so anyone can read it: use a key meant for browsers, never a server key |
 
 Until the addresses are set the page shows "not configured".
 
@@ -54,7 +54,7 @@ test on the deployed page or through a tunnel.
 - the wallet is on the same network as the contracts;
 - voucher kind: the NFT content is read from the blockchain, the GUM amount comes from the redeemer (`get_denomination`);
 - the redeemer is not paused and has enough GUM;
-- the user has ~0.22 TON for fees.
+- the user has ~0.22 TON for fees (0.2 TON is attached; only ~0.006 TON is spent, the rest comes back).
 
 The transaction built by `src/payload.ts` is covered by `../tests/VoucherRedeemer.spec.ts`: the test sends exactly what the
 wallet receives (address, amount, base64 payload) and checks that the voucher is burned and GUM arrive.

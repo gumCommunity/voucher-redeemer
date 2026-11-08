@@ -1,6 +1,6 @@
 import { Address, toNano } from '@ton/core';
 import { compile, NetworkProvider } from '@ton/blueprint';
-import { loadNftItemCode } from '../wrappers/nftVoucherCode';
+import { loadNftItemCode, nftItemAddress } from '../wrappers/nftVoucherCode';
 import { VoucherRedeemer } from '../wrappers/VoucherRedeemer';
 import { JettonMaster } from '../wrappers/Jetton';
 import { VOUCHER_KINDS, gumMasterFor, toGum } from './config';
@@ -14,21 +14,25 @@ export async function run(provider: NetworkProvider, args: string[]) {
     const gumMaster = gumMasterFor(provider);
     ui.write(`Network: ${provider.network()}, GUM master: ${gumMaster.toString()}`);
 
+    const nftItemCode = loadNftItemCode(); // pinned nft-voucher code; must be the code the collection uses
     const redeemer = provider.open(
         VoucherRedeemer.createFromConfig(
             {
                 owner,
                 collection,
-                nftItemCode: loadNftItemCode(), // pinned nft-voucher code; must be the code the collection uses
+                nftItemCode,
                 denominations: VOUCHER_KINDS.map((k) => ({ content: k.content, amount: toGum(k.gum) })),
             },
             await compile('VoucherRedeemer'),
         ),
     );
 
-    // sanity check: our item code really produces the collection's item addresses
+    // check BEFORE deploying that our item code really produces the collection's item addresses
     const fromCollection = await provider.provider(collection).get('get_nft_address_by_index', [{ type: 'int', value: 0n }]);
     const expected = fromCollection.stack.readAddress();
+    if (!nftItemAddress(collection, 0n, nftItemCode).equals(expected)) {
+        throw new Error('Item code mismatch: the redeemer would not recognise vouchers of this collection. Nothing deployed.');
+    }
 
     await redeemer.sendDeploy(provider.sender(), toNano('0.1'));
     await provider.waitForDeploy(redeemer.address);

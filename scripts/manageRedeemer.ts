@@ -3,26 +3,47 @@ import { Address, toNano } from '@ton/core';
 import { fromGum, toGum } from './config';
 import { pickRedeemer } from './redeemerAccess';
 
-// Owner panel: status, withdraw TON / GUM, pause, change GUM amount of a kind, rescue NFT, change owner.
+// Owner panel: status, withdraw TON / GUM, pause, change GUM amount of a kind, rescue NFT, change owner (two steps).
 export async function run(provider: NetworkProvider) {
     const ui = provider.ui();
     const { redeemer, data } = await pickRedeemer(provider, undefined, false);
     const ton = (await provider.provider(redeemer.address).getState()).balance;
+    const me = provider.sender().address!;
 
-    ui.write(`Owner:          ${data.owner.toString()}`);
+    ui.write(`Owner:          ${data.owner.toString()}${data.pendingOwner ? `  (pending: ${data.pendingOwner.toString()})` : ''}`);
     ui.write(`Collection:     ${data.collection.toString()}`);
     ui.write(`GUM wallet:     ${data.jettonWallet?.toString() ?? 'NOT SET'}`);
     ui.write(`GUM (tracked):  ${fromGum(data.gumBalance)}`);
     ui.write(`TON balance:    ${Number(ton) / 1e9}`);
     ui.write(`Redeemed:       ${data.redeemedCount}`);
     ui.write(`Paused:         ${data.paused}`);
-    if (!data.owner.equals(provider.sender().address!)) {
-        ui.write(`\n⚠ Your wallet ${provider.sender().address!.toString()} is not the owner: owner actions will fail.\n`);
+    if (data.failedPayouts > 0) {
+        ui.write(`\n⚠ Failed payouts: ${data.failedPayouts}. These vouchers were burned but their GUM transfer bounced.`);
+        ui.write('  Find the bounced transfers from the GUM wallet in an explorer: query_id = voucher index; pay those users manually.\n');
+    }
+
+    if (data.pendingOwner?.equals(me)) {
+        if (await ui.prompt('You are the proposed owner. Accept the ownership now?')) {
+            await redeemer.sendAcceptOwner(provider.sender());
+            await waitFor(async () => (await redeemer.getRedeemerData()).owner.equals(me), ui, 'You are now the owner.');
+        }
+        return;
+    }
+    if (!data.owner.equals(me)) {
+        ui.write(`\n⚠ Your wallet ${me.toString()} is not the owner: owner actions will fail.\n`);
     }
 
     const action = await ui.choose(
         'Action:',
-        ['withdraw TON', 'withdraw GUM', data.paused ? 'unpause' : 'pause', 'set GUM for a kind', 'rescue NFT', 'change owner', 'exit'],
+        [
+            'withdraw TON',
+            'withdraw GUM',
+            data.paused ? 'unpause' : 'pause',
+            'set GUM for a kind',
+            'rescue NFT',
+            data.pendingOwner ? 'cancel owner change' : 'propose new owner',
+            'exit',
+        ],
         (x) => x,
     );
     const s = provider.sender();
@@ -33,7 +54,7 @@ export async function run(provider: NetworkProvider) {
             break;
         }
         case 'withdraw GUM': {
-            const a = await ui.input(`Amount of GUM (tracked: ${fromGum(data.gumBalance)})`);
+            const a = await ui.input(`Amount of GUM (tracked: ${fromGum(data.gumBalance)}; more takes GUM sent without a notification too)`);
             await redeemer.sendWithdrawJettons(s, data.jettonWallet!, toGum(a.trim()));
             break;
         }
@@ -53,13 +74,18 @@ export async function run(provider: NetworkProvider) {
             await redeemer.sendRescueNft(s, nft, to);
             break;
         }
-        case 'change owner': {
+        case 'cancel owner change':
+            await redeemer.sendProposeOwner(s, null);
+            await waitFor(async () => (await redeemer.getRedeemerData()).pendingOwner === null, ui, 'Owner change cancelled.');
+            return;
+        case 'propose new owner': {
             ui.write('⚠ The new owner gets full control: withdraw all TON and GUM, pause, change amounts.');
-            ui.write('⚠ There is no confirmation from the new address — a wrong address means control is lost forever.');
+            ui.write('The new owner must then run manageRedeemer from their wallet and accept. Until then you stay the owner.');
             const newOwner = await ui.inputAddress('New owner address');
             const repeat = await ui.inputAddress('Repeat the new owner address');
             if (!newOwner.equals(repeat)) throw new Error('Addresses do not match, nothing sent.');
             if (newOwner.equals(data.owner)) throw new Error('This address is already the owner.');
+            if (newOwner.workChain !== 0) throw new Error('The owner must be a basechain (workchain 0) address.');
 
             const forbidden: [Address | null, string][] = [
                 [redeemer.address, 'the redeemer itself'],
@@ -86,21 +112,29 @@ export async function run(provider: NetworkProvider) {
                 ui.write(`Note: ${newOwner.toString()} has never been used on ${provider.network()} (${state}). Make sure you have its seed phrase.`);
             }
 
-            if (!(await ui.prompt(`Transfer ownership of ${redeemer.address.toString()} to ${newOwner.toString()}?`))) {
+            if (!(await ui.prompt(`Propose ${newOwner.toString()} as the owner of ${redeemer.address.toString()}?`))) {
                 ui.write('Cancelled.');
                 return;
             }
-            await redeemer.sendChangeOwner(s, newOwner);
-            for (let i = 0; i < 20; i++) {
-                await new Promise((r) => setTimeout(r, 3000));
-                if ((await redeemer.getRedeemerData()).owner.equals(newOwner)) {
-                    ui.write(`Owner changed to ${newOwner.toString()}.`);
-                    return;
-                }
-            }
-            ui.write('Not confirmed yet, check get_redeemer_data in an explorer.');
+            await redeemer.sendProposeOwner(s, newOwner);
+            await waitFor(async () => !!(await redeemer.getRedeemerData()).pendingOwner?.equals(newOwner), ui, 'Proposed. Waiting for the new owner to accept.');
             return;
         }
     }
     ui.write('Done.');
+}
+
+async function waitFor(check: () => Promise<boolean>, ui: ReturnType<NetworkProvider['ui']>, done: string) {
+    for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+            if (await check()) {
+                ui.write(done);
+                return;
+            }
+        } catch {
+            /* indexer lag, retry */
+        }
+    }
+    ui.write('Not confirmed yet, check get_redeemer_data in an explorer.');
 }

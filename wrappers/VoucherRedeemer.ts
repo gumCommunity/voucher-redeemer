@@ -17,7 +17,8 @@ export const RedeemerOpcodes = {
     withdrawTon: 0x30ee853f,
     withdrawJettons: 0x7bd18a75,
     rescueNft: 0x239c982e,
-    changeOwner: 0x690b6f7c,
+    proposeOwner: 0x027ced09,
+    acceptOwner: 0x7d5cdfed,
     setPaused: 0x00dc73fc,
     requestVoucherData: 0x6d2e6461,
     reportVoucherData: 0x7d85c51d,
@@ -29,7 +30,15 @@ export const RedeemerErrors = {
     nftNotOwned: 404,
     jettonWalletAlreadySet: 405,
     notEnoughTon: 406,
+    notPendingOwner: 408,
+    badAddress: 409,
     unknownOp: 0xffff,
+};
+
+/** query_id of the redeemer's jetton transfers (a voucher payout uses the voucher index). */
+export const RedeemerQueryIds = {
+    withdrawTracked: 0x8000000000000000n,
+    withdrawOther: 0x8000000000000001n,
 };
 
 /** TON the user must attach as forward_amount when sending a voucher to the redeemer. */
@@ -63,7 +72,14 @@ export function voucherRedeemerConfigToCell(c: VoucherRedeemerConfig): Cell {
         .storeCoins(0)
         .storeUint(0, 64)
         .storeBit(c.paused ?? false)
-        .storeRef(beginCell().storeRef(c.nftItemCode).storeDict(dict).endCell())
+        .storeRef(
+            beginCell()
+                .storeRef(c.nftItemCode)
+                .storeDict(dict)
+                .storeAddress(null) // pending_owner
+                .storeUint(0, 32) // failed_payouts
+                .endCell(),
+        )
         .endCell();
 }
 
@@ -111,7 +127,10 @@ export class VoucherRedeemer implements Contract {
         await this.op(provider, via, value, (b) => b.storeCoins(amount), RedeemerOpcodes.withdrawTon);
     }
 
-    /** `jettonWallet` is the redeemer's jetton wallet (GUM or any other token sent by mistake). */
+    /**
+     * `jettonWallet` is the redeemer's jetton wallet (GUM or any other token sent by mistake).
+     * GUM: the tracked GUM go first, the rest (GUM sent without a notification) in a second transfer, so attach >= 0.1 TON.
+     */
     async sendWithdrawJettons(provider: ContractProvider, via: Sender, jettonWallet: Address, amount: bigint, value = toNano('0.1')) {
         await this.op(provider, via, value, (b) => b.storeAddress(jettonWallet).storeCoins(amount), RedeemerOpcodes.withdrawJettons);
     }
@@ -121,8 +140,14 @@ export class VoucherRedeemer implements Contract {
         await this.op(provider, via, value, (b) => b.storeAddress(nft).storeAddress(to), RedeemerOpcodes.rescueNft);
     }
 
-    async sendChangeOwner(provider: ContractProvider, via: Sender, newOwner: Address, value = toNano('0.02')) {
-        await this.op(provider, via, value, (b) => b.storeAddress(newOwner), RedeemerOpcodes.changeOwner);
+    /** Ownership change, step 1 (owner). `null` cancels a pending change. */
+    async sendProposeOwner(provider: ContractProvider, via: Sender, newOwner: Address | null, value = toNano('0.02')) {
+        await this.op(provider, via, value, (b) => b.storeAddress(newOwner), RedeemerOpcodes.proposeOwner);
+    }
+
+    /** Ownership change, step 2: sent by the proposed owner. */
+    async sendAcceptOwner(provider: ContractProvider, via: Sender, value = toNano('0.02')) {
+        await this.op(provider, via, value, () => {}, RedeemerOpcodes.acceptOwner);
     }
 
     async getRedeemerData(provider: ContractProvider) {
@@ -134,6 +159,8 @@ export class VoucherRedeemer implements Contract {
             gumBalance: s.readBigNumber(),
             redeemedCount: s.readBigNumber(),
             paused: s.readBoolean(),
+            pendingOwner: s.readAddressOpt(),
+            failedPayouts: s.readNumber(), // payouts that bounced: the voucher was burned but the GUM did not arrive
         };
     }
 

@@ -12,17 +12,25 @@
 ;;    4. NFT   -> redeemer  report_voucher_data(index, owner, content, payload)
 ;;         redeemer checks: sender == address of item #index of OUR collection (proves it is genuine),
 ;;                          owner == redeemer, content hash -> GUM amount
-;;    5a. OK:   redeemer -> own GUM wallet  transfer(amount GUM -> prev_owner)
-;;              redeemer -> NFT             destroy  => NFT sends its whole TON balance to the redeemer
+;;    5a. OK:   redeemer -> NFT             destroy  => NFT sends its whole TON balance to the redeemer
+;;              redeemer -> own GUM wallet  transfer(amount GUM -> prev_owner) carrying the rest of the user's TON;
+;;                                          the unused part comes back to the user as the jetton excess
 ;;    5b. not OK (paused / unknown kind / not enough GUM / not enough TON attached):
 ;;              redeemer -> NFT             transfer back to prev_owner
+;;    5c. prev_owner is not a basechain wallet (a masterchain owner, or the collection itself when a voucher
+;;        is minted straight to the redeemer): GUM cannot be paid there and the voucher cannot be sent back,
+;;        so the voucher stays on the redeemer untouched; the owner can hand it out with rescue_nft.
 ;;
 ;;  The owner can withdraw TON and jettons at any time, pause redemptions, set GUM amounts per kind
 ;;  and rescue NFTs that were sent without forward_amount (no notification => cannot be auto-processed).
+;;  Ownership changes in two steps: propose_owner, then accept_owner from the new address.
 ;;
 ;;  GUM accounting: `gum_balance` tracks GUM that arrived WITH a transfer_notification
 ;;  (deposit with forward_ton_amount > 0). Redemption pays only from the tracked balance,
 ;;  so a voucher is never burned when there is not enough GUM to pay for it.
+;;  If a GUM transfer bounces, the tracked balance is restored from the amount in the bounced body.
+;;  A bounced voucher payout (the voucher is already burned) is also counted in `failed_payouts`;
+;;  its query_id is the voucher index, so the redemption can be found and paid manually.
 ;;
 
 ;; ---------- op codes ----------
@@ -41,7 +49,8 @@ int op::set_denomination() asm "0x421c9bac PUSHINT";
 int op::withdraw_ton() asm "0x30ee853f PUSHINT";
 int op::withdraw_jettons() asm "0x7bd18a75 PUSHINT";
 int op::rescue_nft() asm "0x239c982e PUSHINT";
-int op::change_owner() asm "0x690b6f7c PUSHINT";
+int op::propose_owner() asm "0x027ced09 PUSHINT";
+int op::accept_owner() asm "0x7d5cdfed PUSHINT";
 int op::set_paused() asm "0x00dc73fc PUSHINT";
 
 ;; ---------- errors ----------
@@ -50,18 +59,25 @@ int error::not_our_nft() asm "403 PUSHINT";
 int error::nft_not_owned() asm "404 PUSHINT";
 int error::jetton_wallet_already_set() asm "405 PUSHINT";
 int error::not_enough_ton() asm "406 PUSHINT";
-int error::not_enough_gum() asm "407 PUSHINT";
+int error::not_pending_owner() asm "408 PUSHINT";
+int error::bad_address() asm "409 PUSHINT";
 int error::unknown_op() asm "0xffff PUSHINT";
 
 ;; ---------- fees ----------
-int jetton_transfer_ton() asm "50000000 PUSHINT";   ;; 0.05 TON attached to every GUM transfer
+int jetton_transfer_ton() asm "50000000 PUSHINT";   ;; 0.05 TON attached to every withdrawal transfer
 int destroy_ton() asm "20000000 PUSHINT";           ;; 0.02 TON attached to destroy (comes back with the NFT balance)
 int min_redeem_value() asm "100000000 PUSHINT";     ;; 0.1 TON must reach the redeemer with report_voucher_data
 int min_storage() asm "50000000 PUSHINT";           ;; 0.05 TON always kept on the redeemer
 
+;; ---------- query_id of the jetton transfers we send (it comes back in a bounce) ----------
+;; voucher payout: the voucher index (< 2^63) -> restore the amount and count a failed payout
+int qid::withdraw_tracked() asm "0x8000000000000000 PUSHINT"; ;; tracked GUM -> restore the amount
+int qid::withdraw_other() asm "0x8000000000000001 PUSHINT";   ;; untracked GUM, other jettons -> nothing to restore
+
 ;; ---------- storage ----------
 ;; owner:MsgAddress collection:MsgAddress jetton_wallet:MsgAddress gum_balance:Coins
-;; redeemed_count:uint64 paused:Bool ^[ nft_item_code:^Cell denominations:(HashmapE 256 Coins) ]
+;; redeemed_count:uint64 paused:Bool
+;; ^[ nft_item_code:^Cell denominations:(HashmapE 256 Coins) pending_owner:MsgAddress failed_payouts:uint32 ]
 
 global slice storage::owner;
 global slice storage::collection;
@@ -71,6 +87,8 @@ global int   storage::redeemed_count;
 global int   storage::paused;
 global cell  storage::nft_item_code;
 global cell  storage::denominations;     ;; cell_hash(item content) -> GUM amount (in jetton units)
+global slice storage::pending_owner;     ;; addr_none when no ownership change is pending
+global int   storage::failed_payouts;    ;; voucher payouts that bounced (voucher burned, GUM not delivered)
 
 () load_data() impure inline {
     slice ds = get_data().begin_parse();
@@ -83,6 +101,8 @@ global cell  storage::denominations;     ;; cell_hash(item content) -> GUM amoun
     slice cfg = ds~load_ref().begin_parse();
     storage::nft_item_code = cfg~load_ref();
     storage::denominations = cfg~load_dict();
+    storage::pending_owner = cfg~load_msg_addr();
+    storage::failed_payouts = cfg~load_uint(32);
 }
 
 () save_data() impure inline {
@@ -96,14 +116,26 @@ global cell  storage::denominations;     ;; cell_hash(item content) -> GUM amoun
         .store_ref(begin_cell()
             .store_ref(storage::nft_item_code)
             .store_dict(storage::denominations)
+            .store_slice(storage::pending_owner)
+            .store_uint(storage::failed_payouts, 32)
             .end_cell())
         .end_cell());
 }
 
 ;; ---------- helpers ----------
 
+slice addr_none() asm "b{00} PUSHSLICE";
+
 int is_addr_none(slice addr) inline {
     return addr.preload_uint(2) == 0;
+}
+
+;; addr_std in workchain 0 without anycast: GUM can be paid and NFTs sent only to such addresses
+int is_basechain(slice addr) inline {
+    if (addr.slice_bits() != 267) {
+        return 0;
+    }
+    return addr.preload_uint(11) == 1024; ;; addr_std$10 anycast:0 workchain_id:0
 }
 
 ;; Must match nft-voucher collection: calculate_nft_item_state_init / calculate_nft_item_address
@@ -144,12 +176,12 @@ slice calc_nft_address(int index) inline {
         .end_cell(), mode);
 }
 
-;; GUM transfer (TEP-74) from our jetton wallet.
-;; query_id = how much was subtracted from gum_balance, so a bounce can restore exactly that.
-() send_gum(int amount, slice to, int tracked_decrement, cell comment) impure inline {
+;; Jetton transfer (TEP-74) from one of our jetton wallets; `to` also gets the jetton excess.
+;; `qid` comes back in a bounce, see qid::*.
+() send_jetton_transfer(slice wallet, int qid, int amount, slice to, cell comment, int value, int mode) impure inline {
     builder body = begin_cell()
         .store_uint(op::jetton_transfer(), 32)
-        .store_uint(tracked_decrement, 64)
+        .store_uint(qid, 64)
         .store_coins(amount)
         .store_slice(to)           ;; destination
         .store_slice(to)           ;; response_destination (jetton excess)
@@ -159,7 +191,7 @@ slice calc_nft_address(int index) inline {
     } else {
         body = body.store_coins(1).store_uint(1, 1).store_ref(comment); ;; 1 nanoTON so wallets show the comment
     }
-    send_with_body_ref(storage::jetton_wallet, jetton_transfer_ton(), body.end_cell(), 1);
+    send_with_body_ref(wallet, value, body.end_cell(), mode);
 }
 
 cell text_comment(slice text) inline {
@@ -189,6 +221,11 @@ cell text_comment(slice text) inline {
     throw_unless(error::not_our_nft(), equal_slices(nft, calc_nft_address(index)));
     throw_unless(error::nft_not_owned(), equal_slices(nft_owner, my_address()));
 
+    ;; 5c: neither GUM nor the voucher can go to prev_owner -> keep the voucher for the owner (rescue_nft)
+    ifnot (is_basechain(prev_owner) & (~ equal_slices(prev_owner, storage::collection))) {
+        return ();
+    }
+
     (int amount, int known?) = get_denomination_amount(cell_hash(content));
 
     int ok? = (~ storage::paused)
@@ -201,11 +238,14 @@ cell text_comment(slice text) inline {
         storage::gum_balance -= amount;
         storage::redeemed_count += 1;
         save_data();
-        send_gum(amount, prev_owner, amount, text_comment("Gumcoin voucher redeemed"));
+        ;; burn: paid from our balance, the 0.02 TON comes back together with the voucher's balance
         send_with_body_ref(nft, destroy_ton(), begin_cell()
             .store_uint(op::destroy(), 32)
             .store_uint(query_id, 64)
             .end_cell(), 1);
+        ;; pay: the GUM transfer carries everything left of the user's TON (mode 64), so it does not depend
+        ;; on a fixed fee and the unused part goes back to the user; query_id = voucher index
+        send_jetton_transfer(storage::jetton_wallet, index, amount, prev_owner, text_comment("Gumcoin voucher redeemed"), 0, 64);
         return ();
     }
 
@@ -226,9 +266,18 @@ cell text_comment(slice text) inline {
         in_msg_body~skip_bits(32); ;; 0xffffffff
         int op = in_msg_body~load_uint(32);
         if ((op == op::jetton_transfer()) & equal_slices(sender, storage::jetton_wallet)) {
-            ;; GUM did not leave the wallet: restore exactly what was subtracted (stored in query_id)
-            storage::gum_balance += in_msg_body~load_uint(64);
-            save_data();
+            ;; The GUM did not leave our wallet. The bounced body keeps op, query_id and amount (first 256 bits).
+            int qid = in_msg_body~load_uint(64);
+            int amount = in_msg_body~load_coins();
+            if (qid < qid::withdraw_tracked()) { ;; voucher payout: the voucher is already burned
+                storage::gum_balance += amount;
+                storage::failed_payouts += 1;
+                save_data();
+            }
+            if (qid == qid::withdraw_tracked()) {
+                storage::gum_balance += amount;
+                save_data();
+            }
         }
         return ();
     }
@@ -261,12 +310,23 @@ cell text_comment(slice text) inline {
         return ();
     }
 
+    ;; ---------- ownership change, step 2 ----------
+    if (op == op::accept_owner()) {
+        throw_unless(error::not_pending_owner(), (~ is_addr_none(storage::pending_owner)) & equal_slices(sender, storage::pending_owner));
+        storage::owner = storage::pending_owner;
+        storage::pending_owner = addr_none();
+        save_data();
+        return ();
+    }
+
     ;; ---------- owner operations ----------
     throw_unless(error::not_owner(), equal_slices(sender, storage::owner));
 
     if (op == op::set_jetton_wallet()) {
         throw_unless(error::jetton_wallet_already_set(), is_addr_none(storage::jetton_wallet));
-        storage::jetton_wallet = in_msg_body~load_msg_addr();
+        slice wallet = in_msg_body~load_msg_addr();
+        throw_unless(error::bad_address(), is_basechain(wallet));
+        storage::jetton_wallet = wallet;
         save_data();
         return ();
     }
@@ -308,24 +368,27 @@ cell text_comment(slice text) inline {
     if (op == op::withdraw_jettons()) {
         slice wallet = in_msg_body~load_msg_addr(); ;; our GUM wallet or any other jetton wallet of the redeemer
         int amount = in_msg_body~load_coins();
-        throw_unless(error::not_enough_ton(), msg_value >= jetton_transfer_ton());
-        int decrement = 0;
-        if (equal_slices(wallet, storage::jetton_wallet)) {
-            ;; untracked GUM (sent without notification) may also be withdrawn; tracked balance never goes below 0
-            decrement = min(amount, storage::gum_balance);
-            storage::gum_balance -= decrement;
-            save_data();
+        ifnot (equal_slices(wallet, storage::jetton_wallet)) {
+            throw_unless(error::not_enough_ton(), msg_value >= jetton_transfer_ton());
+            send_jetton_transfer(wallet, qid::withdraw_other(), amount, storage::owner, null(), 0, 64);
+            return ();
         }
-        builder body = begin_cell()
-            .store_uint(op::jetton_transfer(), 32)
-            .store_uint(decrement, 64)
-            .store_coins(amount)
-            .store_slice(storage::owner)
-            .store_slice(storage::owner)
-            .store_uint(0, 1)
-            .store_coins(0)
-            .store_uint(0, 1);
-        send_with_body_ref(wallet, 0, body.end_cell(), 64);
+        ;; GUM: tracked GUM first (a bounce restores the counter), then GUM that arrived without a notification.
+        ;; Two transfers, so no amount has to fit into query_id and the tracked balance never exceeds the wallet's.
+        int tracked = min(amount, storage::gum_balance);
+        int untracked = amount - tracked;
+        throw_unless(error::not_enough_ton(), msg_value >= jetton_transfer_ton() * 2);
+        storage::gum_balance -= tracked;
+        save_data();
+        raw_reserve(my_balance - msg_value, 0); ;; the transfers are paid from the attached TON only
+        if (untracked) {
+            if (tracked) {
+                send_jetton_transfer(wallet, qid::withdraw_tracked(), tracked, storage::owner, null(), jetton_transfer_ton(), 1);
+            }
+            send_jetton_transfer(wallet, qid::withdraw_other(), untracked, storage::owner, null(), 0, 128);
+        } else {
+            send_jetton_transfer(wallet, qid::withdraw_tracked(), tracked, storage::owner, null(), 0, 128);
+        }
         return ();
     }
     if (op == op::rescue_nft()) {
@@ -334,8 +397,10 @@ cell text_comment(slice text) inline {
         send_nft(nft, to, query_id, 0, 64);
         return ();
     }
-    if (op == op::change_owner()) {
-        storage::owner = in_msg_body~load_msg_addr();
+    if (op == op::propose_owner()) {
+        slice new_owner = in_msg_body~load_msg_addr(); ;; addr_none cancels a pending change
+        throw_unless(error::bad_address(), is_addr_none(new_owner) | is_basechain(new_owner));
+        storage::pending_owner = new_owner;
         save_data();
         return ();
     }
@@ -345,9 +410,11 @@ cell text_comment(slice text) inline {
 
 ;; ---------- get methods ----------
 
-(slice, slice, slice, int, int, int) get_redeemer_data() method_id {
+;; (owner, collection, jetton_wallet, gum_balance, redeemed_count, paused, pending_owner, failed_payouts)
+(slice, slice, slice, int, int, int, slice, int) get_redeemer_data() method_id {
     load_data();
-    return (storage::owner, storage::collection, storage::jetton_wallet, storage::gum_balance, storage::redeemed_count, storage::paused);
+    return (storage::owner, storage::collection, storage::jetton_wallet, storage::gum_balance, storage::redeemed_count, storage::paused,
+            storage::pending_owner, storage::failed_payouts);
 }
 
 ;; GUM amount (jetton units) for an item content cell hash, 0 if unknown

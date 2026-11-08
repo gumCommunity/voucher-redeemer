@@ -9,7 +9,8 @@ import { getDenomination, getLastLt, getNftData, getRedeemerState, getTonBalance
 // ---------- texts (edit to translate) ----------
 const T = {
     title: 'Redeem Gumcoin Vouchers',
-    subtitle: 'Send your NFT voucher to the redeemer contract and receive GUM in your wallet. The voucher is burned.',
+    subtitle:
+        'Send your NFT voucher to the redeemer contract and receive GUM in your wallet. The voucher is burned; the TON stored inside it goes to the redeemer.',
     connectFirst: 'Connect your wallet to see your vouchers.',
     wrongNetwork: (n: string) => `Your wallet is connected to another network. Please switch it to ${n}.`,
     loading: 'Loading…',
@@ -31,7 +32,7 @@ const T = {
     stuck: 'The voucher is at the redeemer but was not processed. Please contact support with the NFT address:',
     timeout: 'No confirmation yet. Check your wallet history and reload the page.',
     error: 'Error:',
-    feeNote: (ton: string) => `${ton} TON is attached to the transaction for fees; the unused part is returned.`,
+    feeNote: (ton: string) => `${ton} TON is attached to the transaction for fees; the unused part is returned to your wallet.`,
     notConfigured: 'This page is not configured yet: redeemer and collection addresses are missing.',
 };
 // -----------------------------------------------
