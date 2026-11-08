@@ -9,7 +9,7 @@ Live: https://gumcommunity.github.io/voucher-redeemer/
 
 ## Configuration
 
-Settings are build-time variables:
+Settings are build-time variables in `web/.env.local` (copy `.env.example`):
 
 | Variable | Value |
 |---|---|
@@ -18,12 +18,24 @@ Settings are build-time variables:
 | `VITE_COLLECTION_ADDRESS` | voucher collection address |
 | `VITE_TONAPI_KEY` | optional tonapi.io client key; without it tonapi allows ~1 request/s and the page waits and retries |
 
-**GitHub Pages:** Settings → Secrets and variables → Actions → **Variables** → add the variables above, then
-Actions → *Deploy redeem page* → **Run workflow**. Until the addresses are set the page shows "not configured".
-
-**Locally:** copy `.env.example` to `.env.local` and fill it in.
+Until the addresses are set the page shows "not configured".
 
 `public/tonconnect-manifest.json` must point to the site where the page is hosted (`url`) and to a square PNG icon (`iconUrl`).
+
+## Deploy to GitHub Pages (no Actions)
+
+One time, in the repository: Settings → Pages → Build and deployment → Source: **Deploy from a branch** →
+branch **`gh-pages`**, folder **`/ (root)`** → Save.
+
+Then, every time you want to update the page (after changing `.env.local` or the code):
+
+```bash
+cd web
+npm run deploy    # checks .env.local, builds, pushes dist/ to the gh-pages branch
+```
+
+The page is served at https://gumcommunity.github.io/voucher-redeemer/ a minute or two later.
+Switching to mainnet = change `.env.local` and run `npm run deploy` again.
 
 ## Build and run
 
@@ -31,6 +43,7 @@ Actions → *Deploy redeem page* → **Run workflow**. Until the addresses are s
 npm install
 npm run dev       # http://localhost:5173
 npm run build     # static files in dist/
+npm run deploy    # publish dist/ to GitHub Pages (gh-pages branch)
 ```
 
 A mobile wallet downloads the manifest from a public HTTPS URL, so connecting from a phone to `localhost` does not work:

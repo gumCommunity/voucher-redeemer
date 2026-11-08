@@ -74,7 +74,7 @@ Errors: `401` not the owner, `403` NFT is not from our collection, `404` NFT is 
 | `wrappers/` | TypeScript wrappers (redeemer, NFT copies from nft-voucher, generic jetton) |
 | `tests/` | sandbox tests with the real GUM wallet code |
 | `scripts/` | deploy / deposit / redeem / manage |
-| `web/` | redeem page (TON Connect), deployed to GitHub Pages |
+| `web/` | redeem page (TON Connect), published to GitHub Pages from the `gh-pages` branch |
 
 ## Usage
 
@@ -94,7 +94,7 @@ npx blueprint run manageRedeemer --testnet     # status, withdraw TON/GUM, pause
 **Deployment order:** first the collection from [nft-voucher](https://github.com/gumCommunity/nft-voucher), then the redeemer.
 `deployRedeemer` checks on-chain that the pinned item code matches the collection.
 
-After deploying, set the page variables (see [web/README.md](web/README.md)) and re-run the *Deploy redeem page* workflow.
+After deploying, put the addresses into `web/.env.local` and run `cd web && npm run deploy` (see [web/README.md](web/README.md)).
 
 ## Notes
 
