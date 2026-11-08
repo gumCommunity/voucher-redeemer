@@ -30,9 +30,9 @@ NFT ── report_voucher_data(index, owner, content) ──> redeemer
 
 **`forward_amount` ≥ 0.15 TON is required.** Without it the NFT does not notify the redeemer and the voucher stays on the
 redeemer; the owner can send it back with `rescue_nft`. The same happens with a very small one (up to ~0.01 TON: too
-little to process the notification); from ~0.02 to 0.1 TON the voucher is sent back. Regular wallets do not attach
-`forward_amount` when sending an NFT, so users should redeem through the [redeem page](web/), which builds the right
-transaction.
+little to process the notification); from ~0.012 to ~0.1 TON the voucher is sent back; from ~0.105 TON it is redeemed
+(0.15 TON leaves a margin for fee changes). Regular wallets do not attach `forward_amount` when sending an NFT, so users
+should redeem through the [redeem page](web/), which builds the right transaction.
 
 ## GUM
 
@@ -56,7 +56,8 @@ The redeemer counts only GUM that arrive **with a notification** (`transfer_noti
   message, so there is no limit on amounts).
 - A bounced **voucher payout** cannot be undone: the voucher is already burned. It is counted in `failed_payouts`
   (`get_redeemer_data`, shown by `manageRedeemer`) and its `query_id` is the voucher index, so the user can be found and
-  paid manually. With the real GUM wallet this does not happen in normal operation; it would take GUM missing from the
+  paid manually. With the real GUM wallet this does not happen in normal operation: in the sandbox no payout bounced even
+  with network fees ×120 (the voucher is sent back or waits for `rescue_nft` instead); it would take GUM missing from the
   redeemer's wallet or a broken wallet.
 - Other jettons are not counted; the owner can withdraw them with `withdraw_jettons` (passing the redeemer's wallet of that jetton).
 
@@ -80,7 +81,8 @@ Get methods: `get_redeemer_data` (owner, collection, GUM wallet, counted GUM, re
 failed payouts), `get_denomination(content_hash)`, `get_nft_address_by_index(index)`.
 
 Errors: `401` not the owner, `403` NFT is not from our collection, `404` NFT is not owned by the redeemer,
-`405` jetton wallet already set, `406` not enough TON, `408` not the pending owner, `409` not a basechain address.
+`405` jetton wallet already set, `406` not enough TON, `408` not the pending owner, `409` not a basechain address,
+`0xffff` unknown op.
 
 ## Repository layout
 
@@ -112,7 +114,9 @@ Scripts verify that the address you enter is really the redeemer (not its GUM wa
 address saved in `deployments.json` by default. **Never send GUM to the redeemer's GUM wallet address**: jettons sent there
 are lost; deposit only with `depositGum` (or a jetton transfer to the redeemer address with `forward_ton_amount > 0`).
 
-Current deployments are listed in [`deployments.json`](deployments.json).
+Current deployments are listed in [`deployments.json`](deployments.json). The testnet contracts there and the live redeem
+page were deployed before the 2026-11-08 audit fixes and run the old code; redeploy the collection, minter and redeemer
+and then the page to test the current version.
 
 **Deployment order:** first the collection from [nft-voucher](https://github.com/gumCommunity/nft-voucher), then the redeemer.
 `deployRedeemer` checks on-chain that the pinned item code matches the collection before deploying anything.
@@ -121,9 +125,9 @@ After deploying, put the addresses into `web/.env.local` and run `cd web && npm 
 
 ## Notes
 
-- The GUM transfer of a redemption carries the rest of the user's TON (~0.14 TON with the redeem page), so it does not
-  depend on a fixed fee; with the real GUM wallet it costs ~0.003 TON and the rest returns to the user. Withdrawals attach
-  0.05 TON per transfer.
+- The GUM transfer of a redemption carries the rest of the user's TON (~0.148 TON with the redeem page), so it does not
+  depend on a fixed fee; with the real GUM wallet it costs ~0.003 TON (including the user's new jetton wallet) and the
+  rest returns to the user. Withdrawals attach 0.05 TON per transfer.
 - The collection owner can mint vouchers and therefore effectively controls the GUM on the redeemer. Keep the collection
   owner (minter admin) and redeemer owner keys safe, preferably in a multisig wallet.
 - Test on testnet first and get an audit before mainnet.
