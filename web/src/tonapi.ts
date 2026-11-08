@@ -27,7 +27,12 @@ async function runGet(address: string, method: string, args: string[] = []): Pro
     return r.stack;
 }
 
-const num = (s: StackItem) => (s.type === 'num' ? BigInt((s as { num: string }).num) : 0n);
+// tonapi returns numbers as hex strings, negative ones as "-0x1"; BigInt() cannot parse a negative hex string
+const num = (s: StackItem) => {
+    if (s.type !== 'num') return 0n;
+    const v = (s as { num: string }).num;
+    return v.startsWith('-') ? -BigInt(v.slice(1)) : BigInt(v);
+};
 const cell = (s: StackItem) => Cell.fromBoc(Buffer.from((s as { cell: string }).cell, 'hex'))[0];
 const addrOpt = (s: StackItem): Address | null => {
     if (s.type !== 'cell') return null;
