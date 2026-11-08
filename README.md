@@ -85,7 +85,7 @@ npm run build
 npm test
 
 # voucher amounts per kind: scripts/config.ts
-npx blueprint run deployRedeemer --testnet     # asks for the collection address, saves addresses to deployments.json
+npx blueprint run deployRedeemer --testnet [collection]   # saves addresses to deployments.json
 npx blueprint run depositGum --testnet         # from the wallet that holds GUM; asks for confirmation
 npx blueprint run redeemVoucher --testnet      # redeem as a user
 npx blueprint run manageRedeemer --testnet     # status, withdraw TON/GUM, pause, amounts, rescue, change owner

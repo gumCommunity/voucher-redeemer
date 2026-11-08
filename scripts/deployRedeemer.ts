@@ -1,4 +1,4 @@
-import { toNano } from '@ton/core';
+import { Address, toNano } from '@ton/core';
 import { compile, NetworkProvider } from '@ton/blueprint';
 import { loadNftItemCode } from '../wrappers/nftVoucherCode';
 import { VoucherRedeemer } from '../wrappers/VoucherRedeemer';
@@ -6,11 +6,11 @@ import { JettonMaster } from '../wrappers/Jetton';
 import { VOUCHER_KINDS, gumMasterFor, toGum } from './config';
 import { saveDeployment } from './redeemerAccess';
 
-export async function run(provider: NetworkProvider) {
+export async function run(provider: NetworkProvider, args: string[]) {
     const ui = provider.ui();
     const owner = provider.sender().address!;
 
-    const collection = await ui.inputAddress('Voucher collection address');
+    const collection = args[0] ? Address.parse(args[0]) : await ui.inputAddress('Voucher collection address');
     const gumMaster = gumMasterFor(provider);
     ui.write(`Network: ${provider.network()}, GUM master: ${gumMaster.toString()}`);
 
