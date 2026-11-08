@@ -58,7 +58,7 @@ The redeemer counts only GUM that arrive **with a notification** (`transfer_noti
 | `withdraw_ton` | `0x30ee853f` | withdraw TON (`0` = everything except 0.05 TON) |
 | `withdraw_jettons` | `0x7bd18a75` | withdraw GUM or any other jetton |
 | `rescue_nft` | `0x239c982e` | send an NFT held by the redeemer to any address |
-| `change_owner` | `0x690b6f7c` | change the owner |
+| `change_owner` | `0x690b6f7c` | change the owner (one step, takes effect immediately; `manageRedeemer` → *change owner* asks the address twice) |
 
 Get methods: `get_redeemer_data`, `get_denomination(content_hash)`, `get_nft_address_by_index(index)`.
 
@@ -88,7 +88,7 @@ npm test
 npx blueprint run deployRedeemer --testnet     # asks for the collection address, saves addresses to deployments.json
 npx blueprint run depositGum --testnet         # from the wallet that holds GUM; asks for confirmation
 npx blueprint run redeemVoucher --testnet      # redeem as a user
-npx blueprint run manageRedeemer --testnet     # status, withdraw TON/GUM, pause, amounts, rescue
+npx blueprint run manageRedeemer --testnet     # status, withdraw TON/GUM, pause, amounts, rescue, change owner
 ```
 
 Scripts verify that the address you enter is really the redeemer (not its GUM wallet or the GUM master) and offer the

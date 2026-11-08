@@ -1,9 +1,9 @@
 import { NetworkProvider } from '@ton/blueprint';
-import { toNano } from '@ton/core';
+import { Address, toNano } from '@ton/core';
 import { fromGum, toGum } from './config';
 import { pickRedeemer } from './redeemerAccess';
 
-// Owner panel: status, withdraw TON / GUM, pause, change GUM amount of a kind, rescue NFT.
+// Owner panel: status, withdraw TON / GUM, pause, change GUM amount of a kind, rescue NFT, change owner.
 export async function run(provider: NetworkProvider) {
     const ui = provider.ui();
     const { redeemer, data } = await pickRedeemer(provider, undefined, false);
@@ -16,10 +16,13 @@ export async function run(provider: NetworkProvider) {
     ui.write(`TON balance:    ${Number(ton) / 1e9}`);
     ui.write(`Redeemed:       ${data.redeemedCount}`);
     ui.write(`Paused:         ${data.paused}`);
+    if (!data.owner.equals(provider.sender().address!)) {
+        ui.write(`\n⚠ Your wallet ${provider.sender().address!.toString()} is not the owner: owner actions will fail.\n`);
+    }
 
     const action = await ui.choose(
         'Action:',
-        ['withdraw TON', 'withdraw GUM', data.paused ? 'unpause' : 'pause', 'set GUM for a kind', 'rescue NFT', 'exit'],
+        ['withdraw TON', 'withdraw GUM', data.paused ? 'unpause' : 'pause', 'set GUM for a kind', 'rescue NFT', 'change owner', 'exit'],
         (x) => x,
     );
     const s = provider.sender();
@@ -49,6 +52,54 @@ export async function run(provider: NetworkProvider) {
             const to = await ui.inputAddress('Send it to');
             await redeemer.sendRescueNft(s, nft, to);
             break;
+        }
+        case 'change owner': {
+            ui.write('⚠ The new owner gets full control: withdraw all TON and GUM, pause, change amounts.');
+            ui.write('⚠ There is no confirmation from the new address — a wrong address means control is lost forever.');
+            const newOwner = await ui.inputAddress('New owner address');
+            const repeat = await ui.inputAddress('Repeat the new owner address');
+            if (!newOwner.equals(repeat)) throw new Error('Addresses do not match, nothing sent.');
+            if (newOwner.equals(data.owner)) throw new Error('This address is already the owner.');
+
+            const forbidden: [Address | null, string][] = [
+                [redeemer.address, 'the redeemer itself'],
+                [data.jettonWallet, "the redeemer's GUM wallet"],
+                [data.collection, 'the voucher collection'],
+            ];
+            for (const [a, what] of forbidden) {
+                if (a && newOwner.equals(a)) throw new Error(`This is ${what}, not a wallet. Nothing sent.`);
+            }
+
+            const state = (await provider.provider(newOwner).getState()).state.type;
+            if (state === 'active') {
+                let isWallet = true;
+                try {
+                    await provider.provider(newOwner).get('seqno', []);
+                } catch {
+                    isWallet = false;
+                }
+                if (!isWallet && !(await ui.prompt('This address is a smart contract without `seqno` (not a regular wallet). Continue anyway?'))) {
+                    ui.write('Cancelled.');
+                    return;
+                }
+            } else {
+                ui.write(`Note: ${newOwner.toString()} has never been used on ${provider.network()} (${state}). Make sure you have its seed phrase.`);
+            }
+
+            if (!(await ui.prompt(`Transfer ownership of ${redeemer.address.toString()} to ${newOwner.toString()}?`))) {
+                ui.write('Cancelled.');
+                return;
+            }
+            await redeemer.sendChangeOwner(s, newOwner);
+            for (let i = 0; i < 20; i++) {
+                await new Promise((r) => setTimeout(r, 3000));
+                if ((await redeemer.getRedeemerData()).owner.equals(newOwner)) {
+                    ui.write(`Owner changed to ${newOwner.toString()}.`);
+                    return;
+                }
+            }
+            ui.write('Not confirmed yet, check get_redeemer_data in an explorer.');
+            return;
         }
     }
     ui.write('Done.');
