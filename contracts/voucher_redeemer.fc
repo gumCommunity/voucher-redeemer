@@ -6,7 +6,9 @@
 ;;  Holds GUM jettons and exchanges NFT vouchers (nft-voucher collection) for GUM.
 ;;
 ;;  Redemption flow (all on-chain, no backend):
-;;    1. user  -> NFT       transfer(new_owner = redeemer, forward_amount >= 0.15 TON)
+;;    1. user  -> NFT       transfer(new_owner = redeemer, response_destination = addr_none, forward_amount >= 0.15 TON)
+;;                          (no response: what is left of the attached TON stays on the NFT, i.e. goes to the redeemer
+;;                          on burn, or back to the user inside the voucher if it is returned)
 ;;    2. NFT   -> redeemer  ownership_assigned(prev_owner)
 ;;    3. redeemer -> NFT    request_voucher_data(payload = prev_owner)
 ;;    4. NFT   -> redeemer  report_voucher_data(index, owner, content, payload)
@@ -14,7 +16,7 @@
 ;;                          owner == redeemer, content hash -> GUM amount
 ;;    5a. OK:   redeemer -> NFT             destroy  => NFT sends its whole TON balance to the redeemer
 ;;              redeemer -> own GUM wallet  transfer(amount GUM -> prev_owner) carrying the rest of the user's TON;
-;;                                          the unused part comes back to the user as the jetton excess
+;;                                          the jetton excess comes back to the redeemer: the user gets only GUM
 ;;    5b. not OK (paused / unknown kind / not enough GUM / not enough TON attached):
 ;;              redeemer -> NFT             transfer back to prev_owner
 ;;    5c. prev_owner is not a basechain wallet (a masterchain owner, or the collection itself when a voucher
@@ -176,15 +178,15 @@ slice calc_nft_address(int index) inline {
         .end_cell(), mode);
 }
 
-;; Jetton transfer (TEP-74) from one of our jetton wallets; `to` also gets the jetton excess.
+;; Jetton transfer (TEP-74) from one of our jetton wallets; `response` gets the jetton excess (unused TON).
 ;; `qid` comes back in a bounce, see qid::*.
-() send_jetton_transfer(slice wallet, int qid, int amount, slice to, cell comment, int value, int mode) impure inline {
+() send_jetton_transfer(slice wallet, int qid, int amount, slice to, slice response, cell comment, int value, int mode) impure inline {
     builder body = begin_cell()
         .store_uint(op::jetton_transfer(), 32)
         .store_uint(qid, 64)
         .store_coins(amount)
         .store_slice(to)           ;; destination
-        .store_slice(to)           ;; response_destination (jetton excess)
+        .store_slice(response)     ;; response_destination (jetton excess)
         .store_uint(0, 1);         ;; no custom_payload
     if (cell_null?(comment)) {
         body = body.store_coins(0).store_uint(0, 1);
@@ -244,8 +246,8 @@ cell text_comment(slice text) inline {
             .store_uint(query_id, 64)
             .end_cell(), 1);
         ;; pay: the GUM transfer carries everything left of the user's TON (mode 64), so it does not depend
-        ;; on a fixed fee and the unused part goes back to the user; query_id = voucher index
-        send_jetton_transfer(storage::jetton_wallet, index, amount, prev_owner, text_comment("Gumcoin voucher redeemed"), 0, 64);
+        ;; on a fixed fee; the unused part comes back to the redeemer (response = us); query_id = voucher index
+        send_jetton_transfer(storage::jetton_wallet, index, amount, prev_owner, my_address(), text_comment("Gumcoin voucher redeemed"), 0, 64);
         return ();
     }
 
@@ -370,7 +372,7 @@ cell text_comment(slice text) inline {
         int amount = in_msg_body~load_coins();
         ifnot (equal_slices(wallet, storage::jetton_wallet)) {
             throw_unless(error::not_enough_ton(), msg_value >= jetton_transfer_ton());
-            send_jetton_transfer(wallet, qid::withdraw_other(), amount, storage::owner, null(), 0, 64);
+            send_jetton_transfer(wallet, qid::withdraw_other(), amount, storage::owner, storage::owner, null(), 0, 64);
             return ();
         }
         ;; GUM: tracked GUM first (a bounce restores the counter), then GUM that arrived without a notification.
@@ -383,11 +385,11 @@ cell text_comment(slice text) inline {
         raw_reserve(my_balance - msg_value, 0); ;; the transfers are paid from the attached TON only
         if (untracked) {
             if (tracked) {
-                send_jetton_transfer(wallet, qid::withdraw_tracked(), tracked, storage::owner, null(), jetton_transfer_ton(), 1);
+                send_jetton_transfer(wallet, qid::withdraw_tracked(), tracked, storage::owner, storage::owner, null(), jetton_transfer_ton(), 1);
             }
-            send_jetton_transfer(wallet, qid::withdraw_other(), untracked, storage::owner, null(), 0, 128);
+            send_jetton_transfer(wallet, qid::withdraw_other(), untracked, storage::owner, storage::owner, null(), 0, 128);
         } else {
-            send_jetton_transfer(wallet, qid::withdraw_tracked(), tracked, storage::owner, null(), 0, 128);
+            send_jetton_transfer(wallet, qid::withdraw_tracked(), tracked, storage::owner, storage::owner, null(), 0, 128);
         }
         return ();
     }

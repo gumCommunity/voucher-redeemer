@@ -13,7 +13,7 @@ export async function run(provider: NetworkProvider) {
 
     await nft.sendTransfer(provider.sender(), {
         newOwner: redeemer,
-        responseDestination: provider.sender().address!,
+        responseDestination: null, // no excess: the user gets only GUM, the rest of the TON goes to the redeemer
         forwardAmount: REDEEM_FORWARD_AMOUNT,
         value: REDEEM_FORWARD_AMOUNT + toNano('0.05'),
     });

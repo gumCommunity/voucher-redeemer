@@ -57,7 +57,7 @@ describe('VoucherRedeemer', () => {
     const redeem = (who: SandboxContract<TreasuryContract>, nft: SandboxContract<NftVoucherItem>, forwardAmount = REDEEM_FORWARD_AMOUNT) =>
         nft.sendTransfer(who.getSender(), {
             newOwner: redeemer.address,
-            responseDestination: who.address,
+            responseDestination: null, // as the redeem page: no excess back to the user
             forwardAmount,
             value: forwardAmount + toNano('0.05'),
         });
@@ -280,7 +280,7 @@ describe('VoucherRedeemer', () => {
         await depositGum(GUM(50_000));
         const nft = await mintVoucher(alice.address, '1.json');
         // exactly what the page hands to the wallet: address, amount string, base64 BOC payload
-        const msg = buildRedeemMessage(nft.address.toString(), redeemer.address.toRawString(), alice.address.toString());
+        const msg = buildRedeemMessage(nft.address.toString(), redeemer.address.toRawString());
         await alice.send({
             to: Address.parse(msg.address),
             value: BigInt(msg.amount),
@@ -294,35 +294,57 @@ describe('VoucherRedeemer', () => {
         }
     });
 
-    it('the GUM transfer carries the rest of the user TON to the real GUM wallet; the unused part comes back', async () => {
+    it('the GUM transfer carries the rest of the user TON to the real GUM wallet; the unused part comes back to the redeemer', async () => {
         await depositGum(GUM(50_000));
         const nft = await mintVoucher(alice.address, '0.json');
         const res = await redeem(alice, nft);
         const aliceGum = jettonWalletAddress(alice.address);
         expect(res.transactions).toHaveTransaction({ from: redeemer.address, to: redeemerGum.address, success: true, value: (v) => v! > toNano('0.1') });
         expect(res.transactions).toHaveTransaction({ from: redeemerGum.address, to: aliceGum, success: true, deploy: true });
-        // the unused TON comes back to the user as the jetton excess
+        // the unused TON is the jetton excess, and it goes to the redeemer, not to the user
         expect(res.transactions).toHaveTransaction({
             from: aliceGum,
-            to: alice.address,
+            to: redeemer.address,
             op: ItemOpcodes.excesses,
             value: (v) => v! > toNano('0.1'),
         });
+        expect(res.transactions).not.toHaveTransaction({ from: aliceGum, to: alice.address, op: ItemOpcodes.excesses });
     });
 
-    it('the user pays only network fees; the TON inside the voucher goes to the redeemer', async () => {
+    it('the user gets only GUM: the attached TON and the TON inside the voucher go to the redeemer', async () => {
         await depositGum(GUM(50_000));
         const nft = await mintVoucher(alice.address, '1.json');
         const voucherTon = await tonOf(nft.address);
         const aliceBefore = await tonOf(alice.address);
         const redeemerBefore = await tonOf(redeemer.address);
-        const msg = buildRedeemMessage(nft.address.toString(), redeemer.address.toRawString(), alice.address.toString());
-        await alice.send({ to: Address.parse(msg.address), value: BigInt(msg.amount), body: Cell.fromBoc(Buffer.from(msg.payload, 'base64'))[0] });
+        const msg = buildRedeemMessage(nft.address.toString(), redeemer.address.toRawString());
+        const res = await alice.send({ to: Address.parse(msg.address), value: BigInt(msg.amount), body: Cell.fromBoc(Buffer.from(msg.payload, 'base64'))[0] });
         expect(await gumOf(alice.address)).toBe(GUM(5_000));
-        expect(aliceBefore - (await tonOf(alice.address))).toBeLessThan(toNano('0.03')); // of the 0.2 TON attached
+        // no TON comes back to the user, except the 1 nanoTON that carries the "Gumcoin voucher redeemed" comment
+        const toAlice = res.transactions.filter((t) => t.inMessage?.info.type === 'internal' && t.inMessage.info.dest.equals(alice.address));
+        expect(toAlice.length).toBeGreaterThan(0); // the jetton notification
+        for (const t of toAlice) {
+            expect((t.inMessage!.info as { value: { coins: bigint } }).value.coins).toBeLessThanOrEqual(1n);
+        }
+        const attached = BigInt(msg.amount);
+        const aliceSpent = aliceBefore - (await tonOf(alice.address));
+        expect(aliceSpent).toBeGreaterThanOrEqual(attached);
+        expect(aliceSpent).toBeLessThan(attached + toNano('0.01')); // + her wallet's own fee
+        // the redeemer keeps the voucher TON and the attached TON, minus network fees of the whole chain
         const redeemerGain = (await tonOf(redeemer.address)) - redeemerBefore;
-        expect(redeemerGain).toBeGreaterThan(voucherTon - toNano('0.01'));
-        expect(redeemerGain).toBeLessThan(voucherTon + toNano('0.001'));
+        expect(redeemerGain).toBeGreaterThan(voucherTon + attached - toNano('0.02'));
+        expect(redeemerGain).toBeLessThan(voucherTon + attached);
+    });
+
+    it('a returned voucher keeps the unused attached TON inside it, nothing is lost', async () => {
+        await depositGum(GUM(50_000));
+        const nft = await mintVoucher(alice.address, '0.json');
+        const before = await tonOf(nft.address);
+        await redeemer.sendSetPaused(admin.getSender(), true);
+        const msg = buildRedeemMessage(nft.address.toString(), redeemer.address.toRawString());
+        await alice.send({ to: Address.parse(msg.address), value: BigInt(msg.amount), body: Cell.fromBoc(Buffer.from(msg.payload, 'base64'))[0] });
+        expect((await nft.getNftData()).ownerAddress!.equals(alice.address)).toBe(true);
+        expect(await tonOf(nft.address)).toBeGreaterThan(before + toNano('0.04')); // what was left of the 0.2 - 0.15
     });
 
     it('a voucher from a masterchain owner stays on the redeemer (no burn, no payout); the owner can rescue it', async () => {

@@ -6,14 +6,16 @@ plus a web page where users connect their wallet (TON Connect) and redeem vouche
 **Redeem page:** https://gumcommunity.github.io/voucher-redeemer/
 
 - A user sends a voucher NFT to the redeemer and receives **10 000 / 5 000 / 1 000 GUM** depending on the voucher kind.
-- The NFT is burned; the TON stored in the NFT goes to the redeemer. The user pays only network fees (~0.006 TON):
-  the rest of the TON attached to the transaction comes back.
+- The NFT is burned; the TON stored in the NFT goes to the redeemer. The user gets **only GUM**: the TON attached to
+  the transaction (0.2 TON on the redeem page) is not returned, what is left after network fees stays on the redeemer.
+  If the voucher cannot be redeemed, it comes back with the unused TON inside it.
 - The owner can withdraw TON and GUM at any time.
 
 ## How a redemption works
 
 ```
-user ── transfer(new_owner = redeemer, forward_amount = 0.15 TON) ──> NFT
+user ── transfer(new_owner = redeemer, response_destination = none, forward_amount = 0.15 TON) ──> NFT
+        (no excess to the user: what is left of the attached TON stays on the NFT)
 NFT ── ownership_assigned(prev_owner) ──> redeemer
 redeemer ── request_voucher_data ──> NFT
 NFT ── report_voucher_data(index, owner, content) ──> redeemer
@@ -21,7 +23,7 @@ NFT ── report_voucher_data(index, owner, content) ──> redeemer
                 NFT owner == redeemer;  hash(content) -> GUM amount
   ├─ OK:    redeemer ── destroy ──> NFT ── whole TON balance ──> redeemer
   │         redeemer ── GUM ──> user (comment "Gumcoin voucher redeemed"); the transfer carries the rest of the
-  │                     user's TON, the unused part comes back to the user as the jetton excess
+  │                     user's TON, the unused part comes back to the redeemer as the jetton excess
   ├─ else:  redeemer ── NFT back ──> user
   │         (paused / not enough GUM / unknown kind / too little TON attached)
   └─ prev_owner is not a basechain wallet (masterchain owner, or the collection when a voucher is minted
@@ -127,7 +129,8 @@ After deploying, put the addresses into `web/.env.local` and run `cd web && npm 
 
 - The GUM transfer of a redemption carries the rest of the user's TON (~0.148 TON with the redeem page), so it does not
   depend on a fixed fee; with the real GUM wallet it costs ~0.003 TON (including the user's new jetton wallet) and the
-  rest returns to the user. Withdrawals attach 0.05 TON per transfer.
+  rest returns to the redeemer (jetton `response_destination` = redeemer). The user receives only GUM and the 1 nanoTON
+  that carries the comment. Withdrawals attach 0.05 TON per transfer.
 - The collection owner can mint vouchers and therefore effectively controls the GUM on the redeemer. Keep the collection
   owner (minter admin) and redeemer owner keys safe, preferably in a multisig wallet.
 - Test on testnet first and get an audit before mainnet.

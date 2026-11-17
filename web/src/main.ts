@@ -32,7 +32,7 @@ const T = {
     stuck: 'The voucher is at the redeemer but was not processed. Please contact support with the NFT address:',
     timeout: 'No confirmation yet. Check your wallet history and reload the page.',
     error: 'Error:',
-    feeNote: (ton: string) => `${ton} TON is attached to the transaction for fees; the unused part is returned to your wallet.`,
+    feeNote: (ton: string) => `${ton} TON is attached to the transaction as the redemption fee; it is not returned. If the voucher cannot be redeemed, it comes back to your wallet.`,
     notConfigured: 'This page is not configured yet: redeemer and collection addresses are missing.',
 };
 // -----------------------------------------------
@@ -188,7 +188,7 @@ async function redeem(item: NftItem, user: string, amount: bigint, btn: HTMLButt
         await tonConnect.sendTransaction({
             validUntil: Math.floor(Date.now() / 1000) + 300,
             network: chain,
-            messages: [buildRedeemMessage(item.address, REDEEMER_ADDRESS, user, BigInt(Date.now()))],
+            messages: [buildRedeemMessage(item.address, REDEEMER_ADDRESS, BigInt(Date.now()))],
         });
         showNotice(T.sent);
         const result = await track(item.address, user, ltBefore);
