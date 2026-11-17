@@ -153,16 +153,22 @@ are lost; deposit only with `depositGum` (or a jetton transfer to the redeemer a
 
 Current deployments are listed in [`deployments.json`](deployments.json).
 
-**Mainnet** (2026-11-08, code of `7d56b7c`, redeemer code hash `06d7f4c0…c97e`):
+**Mainnet** (2026-11-17, code of `075a184`: the redeemer pays fees, the user attaches 0.03 TON; redeemer code hash
+`1d9ac334…3655`):
 
 | | Address |
 |---|---|
-| redeemer | [`EQA5RO-O-WX45P3udSgedZ7ph4vw5CZoNwKEUE-wR7VMK1iE`](https://tonviewer.com/EQA5RO-O-WX45P3udSgedZ7ph4vw5CZoNwKEUE-wR7VMK1iE) |
-| its GUM wallet (do not send GUM here) | `EQAfhSvQV3_TRYiPICpO1ksYaTWsWCXneBflye-QDh4QvVV2` |
+| redeemer | [`EQAyob7dihkwzG3JrCHkvIilR4aGM0vJ9jvCjIE1zIi9nwwa`](https://tonviewer.com/EQAyob7dihkwzG3JrCHkvIilR4aGM0vJ9jvCjIE1zIi9nwwa) |
+| its GUM wallet (do not send GUM here) | `EQCX12DolL-D0C1M0dSaSKufm4zbvQjAWEhbd4UWEsJLGv6h` |
 | voucher collection | [`EQDuHRGMmO4Ie4lr34yGSDOEYeDbpogKrbDA1uDBO8m1gGEm`](https://tonviewer.com/EQDuHRGMmO4Ie4lr34yGSDOEYeDbpogKrbDA1uDBO8m1gGEm) |
 
-The live redeem page works with these mainnet contracts. The testnet contracts in `deployments.json` were deployed
-before the 2026-11-08 audit fixes and run the old code.
+The live redeem page works with these mainnet contracts.
+
+Retired mainnet redeemers (paused, GUM and TON withdrawn; do not send vouchers there):
+- `EQA5RO-O-WX45P3udSgedZ7ph4vw5CZoNwKEUE-wR7VMK1iE` (2026-11-08, code of `7d56b7c`: unused TON returned to the user);
+- `EQA9AVuD5qIc8iUof0Vsm6ebJgxMeT-tG9Dy9UK8mri10shK` (2026-11-17, code of `78cd378`: user attached 0.2 TON).
+
+The testnet contracts in `deployments.json` were deployed before the 2026-11-08 audit fixes and run the old code.
 
 **Deployment order:** first the collection from [nft-voucher](https://github.com/gumCommunity/nft-voucher), then the redeemer.
 `deployRedeemer` checks on-chain that the pinned item code matches the collection before deploying anything.
