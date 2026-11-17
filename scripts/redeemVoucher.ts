@@ -1,7 +1,7 @@
 import { toNano } from '@ton/core';
 import { NetworkProvider } from '@ton/blueprint';
 import { NftVoucherItem } from '../wrappers/NftVoucherItem';
-import { REDEEM_FORWARD_AMOUNT } from '../wrappers/VoucherRedeemer';
+import { REDEEM_FORWARD_AMOUNT, REDEEM_TX_AMOUNT } from '../wrappers/VoucherRedeemer';
 import { pickRedeemer } from './redeemerAccess';
 
 // What a user does: send the voucher NFT to the redeemer with forward_amount.
@@ -15,7 +15,7 @@ export async function run(provider: NetworkProvider) {
         newOwner: redeemer,
         responseDestination: null, // no excess: the user gets only GUM, the rest of the TON goes to the redeemer
         forwardAmount: REDEEM_FORWARD_AMOUNT,
-        value: REDEEM_FORWARD_AMOUNT + toNano('0.05'),
+        value: REDEEM_TX_AMOUNT,
     });
 
     for (let i = 0; i < 30; i++) {

@@ -1,16 +1,36 @@
-import { Blockchain, BlockchainTransaction, SandboxContract, TreasuryContract } from '@ton/sandbox';
+import { Blockchain, BlockchainTransaction, loadConfig, SandboxContract, TreasuryContract, updateConfig } from '@ton/sandbox';
 import { Address, beginCell, Cell, toNano } from '@ton/core';
 import { compile } from '@ton/blueprint';
 import '@ton/test-utils';
 import { NftVoucherCollection } from '../wrappers/NftVoucherCollection';
 import { ItemOpcodes, NftVoucherItem } from '../wrappers/NftVoucherItem';
-import { REDEEM_FORWARD_AMOUNT, RedeemerErrors, RedeemerOpcodes, RedeemerQueryIds, VoucherRedeemer, voucherContentCell } from '../wrappers/VoucherRedeemer';
+import {
+    MIN_REDEEM_BALANCE,
+    OPERATING_RESERVE,
+    REDEEM_FORWARD_AMOUNT,
+    REDEEM_TX_AMOUNT,
+    RedeemerErrors,
+    RedeemerOpcodes,
+    RedeemerQueryIds,
+    VoucherRedeemer,
+    voucherContentCell,
+} from '../wrappers/VoucherRedeemer';
 import { JettonWallet } from '../wrappers/Jetton';
-import { buildRedeemMessage, contentHash as webContentHash } from '../web/src/payload';
+import { buildRedeemMessage, contentHash as webContentHash, REDEEM_FORWARD_AMOUNT as WEB_FORWARD, REDEEM_TX_AMOUNT as WEB_TX_AMOUNT, REDEEMER_MIN_TON } from '../web/src/payload';
 import { loadNftCollectionCode, loadNftItemCode, NFT_COLLECTION_CODE_HASH, NFT_ITEM_CODE_HASH, nftItemAddress } from '../wrappers/nftVoucherCode';
 import { GUM, giveJettons, installGumLibrary, jettonWalletAddress, OTHER_MASTER } from './helpers/gum';
 
 const NFT_TON = toNano('1'); // TON locked inside each voucher
+
+/** Network fee changes: multiplies basechain gas and forward prices (config params 21 and 25). */
+function scaleFees(blockchain: Blockchain, k: bigint) {
+    const c = loadConfig(blockchain.config) as any;
+    const g = c[21];
+    const f = c[25];
+    const gas = { ...g, anon0: { ...g.anon0, flat_gas_price: g.anon0.flat_gas_price * k, other: { ...g.anon0.other, gas_price: g.anon0.other.gas_price * k } } };
+    const fwd = { ...f, anon0: { ...f.anon0, lump_price: f.anon0.lump_price * k, bit_price: f.anon0.bit_price * k, _cell_price: f.anon0._cell_price * k } };
+    blockchain.setConfig(updateConfig(blockchain.config, gas, fwd));
+}
 
 describe('VoucherRedeemer', () => {
     let code: Record<string, Cell> = {};
@@ -59,8 +79,16 @@ describe('VoucherRedeemer', () => {
             newOwner: redeemer.address,
             responseDestination: null, // as the redeem page: no excess back to the user
             forwardAmount,
-            value: forwardAmount + toNano('0.05'),
+            value: forwardAmount + (REDEEM_TX_AMOUNT - REDEEM_FORWARD_AMOUNT),
         });
+    /** exactly what the redeem page hands to the wallet */
+    const redeemViaPage = (who: SandboxContract<TreasuryContract>, nft: SandboxContract<NftVoucherItem>) => {
+        const msg = buildRedeemMessage(nft.address.toString(), redeemer.address.toRawString());
+        return who.send({ to: Address.parse(msg.address), value: BigInt(msg.amount), body: Cell.fromBoc(Buffer.from(msg.payload, 'base64'))[0] });
+    };
+    const setTon = async (addr: Address, v: bigint) => {
+        (await blockchain.getContract(addr)).balance = v;
+    };
 
     beforeEach(async () => {
         blockchain = await Blockchain.create();
@@ -104,7 +132,7 @@ describe('VoucherRedeemer', () => {
                 code.VoucherRedeemer,
             ),
         );
-        const d = await redeemer.sendDeploy(admin.getSender(), toNano('0.1'));
+        const d = await redeemer.sendDeploy(admin.getSender(), OPERATING_RESERVE + toNano('0.1')); // as deployRedeemer
         expect(d.transactions).toHaveTransaction({ to: redeemer.address, deploy: true, success: true });
         redeemerGum = await gumWallet(redeemer.address);
         await redeemer.sendSetJettonWallet(admin.getSender(), redeemerGum.address);
@@ -202,12 +230,131 @@ describe('VoucherRedeemer', () => {
         expect((await redeemer.getRedeemerData()).gumBalance).toBe(GUM(50_000));
     });
 
-    it('returns the voucher when too little TON is attached', async () => {
+    it('the page and the wrapper attach the same small amounts', () => {
+        expect(WEB_FORWARD).toBe(REDEEM_FORWARD_AMOUNT);
+        expect(WEB_TX_AMOUNT).toBe(REDEEM_TX_AMOUNT);
+        expect(REDEEMER_MIN_TON).toBe(MIN_REDEEM_BALANCE);
+        expect(REDEEM_TX_AMOUNT).toBeLessThanOrEqual(toNano('0.03'));
+    });
+
+    it('with a forward_amount too small for the notification the voucher waits on the redeemer, it is never burned', async () => {
         await depositGum(GUM(50_000));
         const nft = await mintVoucher(alice.address, '0.json');
-        await redeem(alice, nft, toNano('0.06'));
-        expect((await nft.getNftData()).ownerAddress!.equals(alice.address)).toBe(true);
+        await redeem(alice, nft, toNano('0.0005'));
+        expect(await nft.getIsBurned()).toBe(false);
+        expect((await nft.getNftData()).ownerAddress!.equals(redeemer.address)).toBe(true);
         expect(await gumOf(alice.address)).toBe(0n);
+        await redeemer.sendRescueNft(admin.getSender(), nft.address, alice.address);
+        expect((await nft.getNftData()).ownerAddress!.equals(alice.address)).toBe(true);
+    });
+
+    it.each([1n, 3n, 10n])('network fees x%i: a voucher is never burned without its GUM', async (k) => {
+        await depositGum(GUM(1_000_000));
+        scaleFees(blockchain, k);
+        const outcomes: string[] = [];
+        for (const fwd of ['0.0005', '0.001', '0.002', '0.003', '0.005', '0.008', '0.015', '0.03']) {
+            const nft = await mintVoucher(alice.address, '2.json');
+            const gumBefore = await gumOf(alice.address);
+            const forwardAmount = toNano(fwd);
+            await nft.sendTransfer(alice.getSender(), { newOwner: redeemer.address, responseDestination: null, forwardAmount, value: forwardAmount + toNano('0.011') * k + toNano('0.01') });
+            const burned = await nft.getIsBurned();
+            const gotGum = (await gumOf(alice.address)) - gumBefore;
+            if (burned) {
+                expect(gotGum).toBe(GUM(1_000)); // burned => paid
+                outcomes.push('redeemed');
+            } else {
+                expect(gotGum).toBe(0n);
+                const owner = (await nft.getNftData()).ownerAddress!;
+                outcomes.push(owner.equals(alice.address) ? 'not sent' : 'waits for rescue');
+            }
+        }
+        expect((await redeemer.getRedeemerData()).failedPayouts).toBe(0);
+        if (k <= 3n) expect(outcomes[outcomes.length - 2]).toBe('redeemed'); // the page amount works with fees x3
+    });
+
+    it('with fees x3 the page transaction still redeems', async () => {
+        await depositGum(GUM(50_000));
+        const nft = await mintVoucher(alice.address, '0.json');
+        scaleFees(blockchain, 3n);
+        await redeemViaPage(alice, nft);
+        expect(await nft.getIsBurned()).toBe(true);
+        expect(await gumOf(alice.address)).toBe(GUM(10_000));
+    });
+
+    it('without enough TON on the redeemer the voucher is returned, not burned', async () => {
+        await depositGum(GUM(50_000));
+        const nft = await mintVoucher(alice.address, '0.json');
+        await setTon(redeemer.address, MIN_REDEEM_BALANCE - toNano('0.02'));
+        await redeemViaPage(alice, nft);
+        expect(await nft.getIsBurned()).toBe(false);
+        expect((await nft.getNftData()).ownerAddress!.equals(alice.address)).toBe(true);
+        expect((await redeemer.getRedeemerData()).gumBalance).toBe(GUM(50_000));
+        expect(await gumOf(alice.address)).toBe(0n);
+    });
+
+    it('with no TON even for a return the voucher waits on the redeemer for rescue_nft', async () => {
+        await depositGum(GUM(50_000));
+        const nft = await mintVoucher(alice.address, '0.json');
+        await setTon(redeemer.address, toNano('0.06'));
+        await redeemViaPage(alice, nft);
+        expect(await nft.getIsBurned()).toBe(false);
+        expect((await nft.getNftData()).ownerAddress!.equals(redeemer.address)).toBe(true);
+        await admin.send({ to: redeemer.address, value: toNano('1') });
+        await redeemer.sendRescueNft(admin.getSender(), nft.address, alice.address);
+        expect((await nft.getNftData()).ownerAddress!.equals(alice.address)).toBe(true);
+    });
+
+    it('fake ownership_assigned notifications cost the redeemer nothing', async () => {
+        await depositGum(GUM(50_000));
+        const before = await tonOf(redeemer.address);
+        for (let i = 0; i < 20; i++) {
+            const body = beginCell().storeUint(ItemOpcodes.ownershipAssigned, 32).storeUint(i, 64).storeAddress(bob.address).storeBit(false).endCell();
+            await bob.send({ to: redeemer.address, value: toNano('0.01'), body });
+        }
+        expect(await tonOf(redeemer.address)).toBeGreaterThanOrEqual(before);
+        expect((await redeemer.getRedeemerData()).gumBalance).toBe(GUM(50_000));
+    });
+
+    it('a forged report costs the redeemer nothing', async () => {
+        await depositGum(GUM(50_000));
+        const before = await tonOf(redeemer.address);
+        const forged = beginCell()
+            .storeUint(RedeemerOpcodes.reportVoucherData, 32)
+            .storeUint(0, 64)
+            .storeUint(0, 64)
+            .storeAddress(redeemer.address)
+            .storeRef(voucherContentCell('0.json'))
+            .storeRef(beginCell().storeAddress(bob.address).endCell())
+            .endCell();
+        for (const value of [toNano('0.001'), toNano('0.01'), toNano('1')]) {
+            await bob.send({ to: redeemer.address, value, body: forged });
+        }
+        expect(await tonOf(redeemer.address)).toBeGreaterThanOrEqual(before);
+    });
+
+    it('sending a voucher around while paused costs the sender, not the redeemer', async () => {
+        await depositGum(GUM(50_000));
+        const nft = await mintVoucher(alice.address, '0.json');
+        await redeemer.sendSetPaused(admin.getSender(), true);
+        const redeemerBefore = await tonOf(redeemer.address);
+        const aliceBefore = await tonOf(alice.address);
+        for (let i = 0; i < 5; i++) {
+            await redeemViaPage(alice, nft);
+            expect((await nft.getNftData()).ownerAddress!.equals(alice.address)).toBe(true);
+        }
+        expect(await tonOf(redeemer.address)).toBeGreaterThanOrEqual(redeemerBefore);
+        expect(aliceBefore - (await tonOf(alice.address))).toBeGreaterThan(toNano('0.1')); // ~0.03 per round
+    });
+
+    it('a returned voucher costs the redeemer nothing: the return excess comes back to it', async () => {
+        await depositGum(GUM(50_000));
+        const nft = await mintVoucher(alice.address, '3.json'); // unknown kind
+        const before = await tonOf(redeemer.address);
+        const res = await redeemViaPage(alice, nft);
+        expect((await nft.getNftData()).ownerAddress!.equals(alice.address)).toBe(true);
+        expect(res.transactions).toHaveTransaction({ from: nft.address, to: redeemer.address, op: ItemOpcodes.excesses });
+        expect(res.transactions).not.toHaveTransaction({ from: nft.address, to: alice.address, op: ItemOpcodes.excesses });
+        expect(await tonOf(redeemer.address)).toBeGreaterThanOrEqual(before);
     });
 
     it('voucher sent without forward_amount can be rescued by the owner', async () => {
@@ -294,19 +441,19 @@ describe('VoucherRedeemer', () => {
         }
     });
 
-    it('the GUM transfer carries the rest of the user TON to the real GUM wallet; the unused part comes back to the redeemer', async () => {
+    it('the redeemer pays the GUM transfer to the real GUM wallet; the unused part comes back to the redeemer', async () => {
         await depositGum(GUM(50_000));
         const nft = await mintVoucher(alice.address, '0.json');
-        const res = await redeem(alice, nft);
+        const res = await redeemViaPage(alice, nft);
         const aliceGum = jettonWalletAddress(alice.address);
-        expect(res.transactions).toHaveTransaction({ from: redeemer.address, to: redeemerGum.address, success: true, value: (v) => v! > toNano('0.1') });
+        expect(res.transactions).toHaveTransaction({ from: redeemer.address, to: redeemerGum.address, success: true, value: toNano('0.1') });
         expect(res.transactions).toHaveTransaction({ from: redeemerGum.address, to: aliceGum, success: true, deploy: true });
         // the unused TON is the jetton excess, and it goes to the redeemer, not to the user
         expect(res.transactions).toHaveTransaction({
             from: aliceGum,
             to: redeemer.address,
             op: ItemOpcodes.excesses,
-            value: (v) => v! > toNano('0.1'),
+            value: (v) => v! > toNano('0.09'),
         });
         expect(res.transactions).not.toHaveTransaction({ from: aliceGum, to: alice.address, op: ItemOpcodes.excesses });
     });
@@ -344,7 +491,7 @@ describe('VoucherRedeemer', () => {
         const msg = buildRedeemMessage(nft.address.toString(), redeemer.address.toRawString());
         await alice.send({ to: Address.parse(msg.address), value: BigInt(msg.amount), body: Cell.fromBoc(Buffer.from(msg.payload, 'base64'))[0] });
         expect((await nft.getNftData()).ownerAddress!.equals(alice.address)).toBe(true);
-        expect(await tonOf(nft.address)).toBeGreaterThan(before + toNano('0.04')); // what was left of the 0.2 - 0.15
+        expect(await tonOf(nft.address)).toBeGreaterThan(before); // what was left of the attached TON after forward + NFT gas
     });
 
     it('a voucher from a masterchain owner stays on the redeemer (no burn, no payout); the owner can rescue it', async () => {
@@ -441,13 +588,34 @@ describe('VoucherRedeemer', () => {
             expect((await redeemer.getRedeemerData()).gumBalance).toBe(0n);
         });
 
-        it('withdraws all TON except the storage reserve', async () => {
+        it('while active, "withdraw all" leaves the operating reserve and redemptions keep working', async () => {
             await depositGum(GUM(50_000));
             await redeem(alice, await mintVoucher(alice.address, '2.json'));
             const before = await tonOf(admin.address);
             await redeemer.sendWithdrawTon(admin.getSender());
-            expect((await tonOf(admin.address)) - before).toBeGreaterThan(NFT_TON);
+            expect((await tonOf(admin.address)) - before).toBeGreaterThan(NFT_TON - toNano('0.1'));
+            expect(await tonOf(redeemer.address)).toBeGreaterThanOrEqual(OPERATING_RESERVE - toNano('0.01'));
+            expect(await tonOf(redeemer.address)).toBeLessThanOrEqual(OPERATING_RESERVE);
+            const nft = await mintVoucher(alice.address, '2.json');
+            await redeemViaPage(alice, nft);
+            expect(await nft.getIsBurned()).toBe(true);
+            // a fixed amount that would go below the reserve is refused (the redemption above refilled the balance)
+            const excess = (await tonOf(redeemer.address)) - OPERATING_RESERVE;
+            const tooMuch = await redeemer.sendWithdrawTon(admin.getSender(), excess + toNano('0.05'));
+            expect(tooMuch.transactions).toHaveTransaction({ to: redeemer.address, exitCode: RedeemerErrors.notEnoughTon });
+        });
+
+        it('when paused, everything except the storage reserve can be withdrawn; unpausing requires the operating reserve', async () => {
+            await depositGum(GUM(50_000));
+            await redeemer.sendSetPaused(admin.getSender(), true);
+            await redeemer.sendWithdrawTon(admin.getSender());
             expect(await tonOf(redeemer.address)).toBeLessThanOrEqual(toNano('0.05'));
+            const res = await redeemer.sendSetPaused(admin.getSender(), false);
+            expect(res.transactions).toHaveTransaction({ to: redeemer.address, exitCode: RedeemerErrors.notEnoughTon });
+            expect((await redeemer.getRedeemerData()).paused).toBe(true);
+            await admin.send({ to: redeemer.address, value: OPERATING_RESERVE });
+            await redeemer.sendSetPaused(admin.getSender(), false);
+            expect((await redeemer.getRedeemerData()).paused).toBe(false);
         });
 
         it('withdraws a fixed TON amount', async () => {

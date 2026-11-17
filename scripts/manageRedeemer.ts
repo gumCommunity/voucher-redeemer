@@ -49,7 +49,7 @@ export async function run(provider: NetworkProvider) {
     const s = provider.sender();
     switch (action) {
         case 'withdraw TON': {
-            const a = await ui.input('Amount in TON (empty = everything except 0.05)');
+            const a = await ui.input(`Amount in TON (empty = everything except ${data.paused ? '0.05' : '0.5 (operating reserve; pause first to withdraw it)'})`);
             await redeemer.sendWithdrawTon(s, a.trim() ? toNano(a.trim()) : 0n);
             break;
         }

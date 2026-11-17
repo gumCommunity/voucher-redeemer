@@ -2,11 +2,14 @@
 import { Address, beginCell, Cell } from '@ton/core';
 
 export const NFT_TRANSFER_OP = 0x5fcc3d14;
-/** TON that reaches the redeemer with ownership_assigned (pays for GUM transfer + burn). */
-export const REDEEM_FORWARD_AMOUNT = 150_000_000n; // 0.15 TON
+/** TON that reaches the redeemer with ownership_assigned: pays only the notification and the data request
+ *  (~0.002 TON). Burn and GUM transfer are paid by the redeemer after it has verified the voucher. */
+export const REDEEM_FORWARD_AMOUNT = 15_000_000n; // 0.015 TON
 /** Total attached to the NFT transfer. Nothing comes back to the user: what is left stays on the NFT and goes to the
  *  redeemer with the NFT balance on burn (or back to the user inside the voucher if the redeemer returns it). */
-export const REDEEM_TX_AMOUNT = 200_000_000n; // 0.2 TON
+export const REDEEM_TX_AMOUNT = 30_000_000n; // 0.03 TON (forward + ~0.011 NFT gas)
+/** Below this TON balance the redeemer returns vouchers instead of paying (contract: min_storage + destroy + payout + fees). */
+export const REDEEMER_MIN_TON = 180_000_000n; // 0.18 TON
 
 /** TEP-62 NFT transfer: voucher -> redeemer, no excess (response_destination = addr_none), with forward_amount for the notification. */
 export function buildRedeemPayload(redeemer: string, queryId: bigint = 0n): Cell {

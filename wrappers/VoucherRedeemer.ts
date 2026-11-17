@@ -41,8 +41,16 @@ export const RedeemerQueryIds = {
     withdrawOther: 0x8000000000000001n,
 };
 
-/** TON the user must attach as forward_amount when sending a voucher to the redeemer. */
-export const REDEEM_FORWARD_AMOUNT = toNano('0.15');
+/** forward_amount the user attaches when sending a voucher: pays only the notification and the data request
+ *  (~0.002 TON); everything after the voucher is verified is paid by the redeemer. */
+export const REDEEM_FORWARD_AMOUNT = toNano('0.015');
+/** Total the user attaches to the NFT transfer: forward_amount + ~0.011 TON NFT gas (the rest stays on the NFT). */
+export const REDEEM_TX_AMOUNT = toNano('0.03');
+
+/** Kept on the redeemer while it is not paused (contract constant operating_reserve). */
+export const OPERATING_RESERVE = toNano('0.5');
+/** Below this TON balance the redeemer cannot pay a redemption and returns vouchers (min_storage + destroy + payout + fees). */
+export const MIN_REDEEM_BALANCE = toNano('0.18');
 
 /** Item content cell exactly as the collection stores it: suffix like "0.json". */
 export function voucherContentCell(suffix: string): Cell {

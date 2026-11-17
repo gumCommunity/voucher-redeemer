@@ -6,35 +6,67 @@ plus a web page where users connect their wallet (TON Connect) and redeem vouche
 **Redeem page:** https://gumcommunity.github.io/voucher-redeemer/
 
 - A user sends a voucher NFT to the redeemer and receives **10 000 / 5 000 / 1 000 GUM** depending on the voucher kind.
-- The NFT is burned; the TON stored in the NFT goes to the redeemer. The user gets **only GUM**: the TON attached to
-  the transaction (0.2 TON on the redeem page) is not returned, what is left after network fees stays on the redeemer.
-  If the voucher cannot be redeemed, it comes back with the unused TON inside it.
-- The owner can withdraw TON and GUM at any time.
+- The NFT is burned; the TON stored in the NFT goes to the redeemer. The user gets **only GUM** and pays only
+  **0.03 TON** (attached on the redeem page, not returned). The burn and the GUM transfer are paid by the redeemer from
+  its own balance, after it has verified the voucher; the voucher's TON refunds it (~+0.26 TON per redemption for a
+  voucher holding 0.24 TON).
+- The owner can withdraw TON and GUM at any time. While redemptions are active, 0.5 TON stays on the redeemer as the
+  operating reserve (see [TON](#ton)).
 
 ## How a redemption works
 
 ```
-user ── transfer(new_owner = redeemer, response_destination = none, forward_amount = 0.15 TON) ──> NFT
+user ── transfer(new_owner = redeemer, response_destination = none, forward_amount = 0.015 TON) ──> NFT   (0.03 TON attached)
         (no excess to the user: what is left of the attached TON stays on the NFT)
-NFT ── ownership_assigned(prev_owner) ──> redeemer
-redeemer ── request_voucher_data ──> NFT
+NFT ── ownership_assigned(prev_owner) ──> redeemer                  ┐ paid by the user's forward_amount:
+redeemer ── request_voucher_data ──> NFT                            ┘ the sender is not verified yet
 NFT ── report_voucher_data(index, owner, content) ──> redeemer
         checks: sender == address of item #index of OUR collection (fakes are rejected)
                 NFT owner == redeemer;  hash(content) -> GUM amount
-  ├─ OK:    redeemer ── destroy ──> NFT ── whole TON balance ──> redeemer
-  │         redeemer ── GUM ──> user (comment "Gumcoin voucher redeemed"); the transfer carries the rest of the
-  │                     user's TON, the unused part comes back to the redeemer as the jetton excess
-  ├─ else:  redeemer ── NFT back ──> user
-  │         (paused / not enough GUM / unknown kind / too little TON attached)
+        from here on the redeemer pays from its own balance
+  ├─ OK:    redeemer ── destroy (0.02 TON) ──> NFT ── whole TON balance ──> redeemer
+  │         redeemer ── GUM (0.1 TON attached) ──> user (comment "Gumcoin voucher redeemed");
+  │                     the unused TON comes back to the redeemer as the jetton excess
+  ├─ else:  redeemer ── NFT back (0.05 TON attached, excess back to the redeemer) ──> user
+  │         (paused / not enough GUM / unknown kind / not enough TON on the redeemer)
   └─ prev_owner is not a basechain wallet (masterchain owner, or the collection when a voucher is minted
             straight to the redeemer): nothing is sent, the voucher stays on the redeemer for `rescue_nft`
 ```
 
-**`forward_amount` ≥ 0.15 TON is required.** Without it the NFT does not notify the redeemer and the voucher stays on the
-redeemer; the owner can send it back with `rescue_nft`. The same happens with a very small one (up to ~0.01 TON: too
-little to process the notification); from ~0.012 to ~0.1 TON the voucher is sent back; from ~0.105 TON it is redeemed
-(0.15 TON leaves a margin for fee changes). Regular wallets do not attach `forward_amount` when sending an NFT, so users
-should redeem through the [redeem page](web/), which builds the right transaction.
+**A voucher is never burned without its GUM transfer.** The burn and the GUM transfer are sent in one action phase
+(both or none), and the redeemer checks before that it has the TON for both. Burn and payout use fixed amounts with a
+large margin (the GUM transfer uses ~0.003 of its 0.1 TON), so fee changes do not matter there. (A GUM transfer can
+still bounce if the GUM wallet holds less than the counted balance; that case is counted in `failed_payouts`, see
+[GUM accounting](#gum-accounting).)
+
+**`forward_amount` pays only the first two steps** (~0.002 TON). Without it the NFT does not notify the redeemer and
+the voucher stays on the redeemer; the owner can send it back with `rescue_nft`. Measured in the sandbox with the real
+GUM wallet (`forward_amount` → result):
+
+| network fees | 0.001 | 0.002–0.005 | 0.008 | **0.015 (page)** | 0.03 |
+|---|---|---|---|---|---|
+| as now | waits for rescue | redeemed | redeemed | **redeemed** | redeemed |
+| ×3 | waits | waits | redeemed | **redeemed** | redeemed |
+| ×10 | waits | waits | waits | waits | redeemed |
+
+"Waits" is safe: the voucher is on the redeemer, not burned, and the owner returns it with `rescue_nft` (raise
+`REDEEM_FORWARD_AMOUNT` on the page if fees ever grow that much). Regular wallets do not attach `forward_amount` when
+sending an NFT, so users should redeem through the [redeem page](web/), which builds the right transaction.
+
+### TON
+
+The redeemer pays the burn and the GUM transfer (~0.13 TON in flight, ~0.006 actually spent) before the voucher's TON
+comes back with the burn, so it needs a balance:
+- `deployRedeemer` deploys it with **0.6 TON** (0.5 operating reserve + storage);
+- while it is **not paused**, `withdraw_ton` always leaves **0.5 TON**, and `set_paused(false)` is refused without it;
+- when **paused**, everything except 0.05 TON can be withdrawn (e.g. when moving to a new redeemer);
+- if the balance still drops below ~0.18 TON, vouchers are sent back instead of being redeemed, and the redeem page
+  shows "temporarily unavailable".
+
+Spam does not cost the redeemer anything: a fake `ownership_assigned` gets only its own TON back (the request is paid with
+mode 64 from the notification), a forged report is rejected, and a voucher sent back (paused, unknown kind) returns its
+excess to the redeemer, so sending it around in a loop costs the sender ~0.03 TON per round. All of this is covered by
+tests.
 
 ## GUM
 
@@ -69,8 +101,8 @@ The redeemer counts only GUM that arrive **with a notification** (`transfer_noti
 |---|---|---|
 | `set_jetton_wallet` | `0x18cb206a` | once: the redeemer's GUM wallet, a basechain address (done by `deployRedeemer`) |
 | `set_denomination` | `0x421c9bac` | GUM amount for a voucher kind (`0` disables the kind) |
-| `set_paused` | `0x00dc73fc` | pause: received vouchers are sent back |
-| `withdraw_ton` | `0x30ee853f` | withdraw TON (`0` = everything except 0.05 TON) |
+| `set_paused` | `0x00dc73fc` | pause: received vouchers are sent back; unpausing requires 0.5 TON on the redeemer |
+| `withdraw_ton` | `0x30ee853f` | withdraw TON (`0` = everything except the reserve: 0.5 TON while active, 0.05 TON when paused) |
 | `withdraw_jettons` | `0x7bd18a75` | withdraw GUM (counted first, then uncounted) or any other jetton |
 | `rescue_nft` | `0x239c982e` | send an NFT held by the redeemer to any address |
 | `propose_owner` | `0x027ced09` | step 1 of an owner change: a basechain address, `addr_none` cancels |
@@ -127,10 +159,10 @@ After deploying, put the addresses into `web/.env.local` and run `cd web && npm 
 
 ## Notes
 
-- The GUM transfer of a redemption carries the rest of the user's TON (~0.148 TON with the redeem page), so it does not
-  depend on a fixed fee; with the real GUM wallet it costs ~0.003 TON (including the user's new jetton wallet) and the
-  rest returns to the redeemer (jetton `response_destination` = redeemer). The user receives only GUM and the 1 nanoTON
-  that carries the comment. Withdrawals attach 0.05 TON per transfer.
+- The GUM transfer of a redemption carries 0.1 TON from the redeemer; with the real GUM wallet it costs ~0.003 TON
+  (including the user's new jetton wallet) and the rest returns to the redeemer (jetton `response_destination` =
+  redeemer). The user receives only GUM and the 1 nanoTON that carries the comment. Withdrawals attach 0.05 TON per
+  transfer.
 - The collection owner can mint vouchers and therefore effectively controls the GUM on the redeemer. Keep the collection
   owner (minter admin) and redeemer owner keys safe, preferably in a multisig wallet.
 - Test on testnet first and get an audit before mainnet.

@@ -1,8 +1,9 @@
 # Redeem page (TON Connect)
 
 Static page, no backend. A user connects a wallet, sees their Gumcoin vouchers and presses **Redeem**.
-The wallet signs an NFT transfer to the redeemer with `forward_amount` 0.15 TON (0.2 TON attached in total) and no
-`response_destination`, so no TON comes back: the user gets only GUM, the rest of the TON stays on the redeemer. The page then follows the NFT and shows the result: GUM sent, voucher returned (paused / not enough GUM),
+The wallet signs an NFT transfer to the redeemer with `forward_amount` 0.015 TON (0.03 TON attached in total) and no
+`response_destination`, so no TON comes back: the user gets only GUM. The burn and the GUM transfer are paid by the
+redeemer. The page then follows the NFT and shows the result: GUM sent, voucher returned (paused / not enough GUM),
 or voucher stuck (contact support).
 
 Live: https://gumcommunity.github.io/voucher-redeemer/
@@ -54,7 +55,8 @@ test on the deployed page or through a tunnel.
 - the wallet is on the same network as the contracts;
 - voucher kind: the NFT content is read from the blockchain, the GUM amount comes from the redeemer (`get_denomination`);
 - the redeemer is not paused and has enough GUM;
-- the user has ~0.22 TON for fees (0.2 TON is attached and is not returned; a returned voucher keeps the unused part).
+- the redeemer has at least 0.18 TON to pay redemptions (otherwise "temporarily unavailable");
+- the user has ~0.05 TON for fees (0.03 TON is attached and is not returned; a returned voucher keeps the unused part).
 
 The transaction built by `src/payload.ts` is covered by `../tests/VoucherRedeemer.spec.ts`: the test sends exactly what the
 wallet receives (address, amount, base64 payload) and checks that the voucher is burned and GUM arrive.

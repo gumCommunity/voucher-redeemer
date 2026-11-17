@@ -1,7 +1,7 @@
 import { Address, toNano } from '@ton/core';
 import { compile, NetworkProvider } from '@ton/blueprint';
 import { loadNftItemCode, nftItemAddress } from '../wrappers/nftVoucherCode';
-import { VoucherRedeemer } from '../wrappers/VoucherRedeemer';
+import { OPERATING_RESERVE, VoucherRedeemer } from '../wrappers/VoucherRedeemer';
 import { JettonMaster } from '../wrappers/Jetton';
 import { VOUCHER_KINDS, gumMasterFor, toGum } from './config';
 import { saveDeployment } from './redeemerAccess';
@@ -34,7 +34,8 @@ export async function run(provider: NetworkProvider, args: string[]) {
         throw new Error('Item code mismatch: the redeemer would not recognise vouchers of this collection. Nothing deployed.');
     }
 
-    await redeemer.sendDeploy(provider.sender(), toNano('0.1'));
+    // the redeemer pays redemptions from its own balance: deploy it with the operating reserve + storage
+    await redeemer.sendDeploy(provider.sender(), OPERATING_RESERVE + toNano('0.1'));
     await provider.waitForDeploy(redeemer.address);
 
     const computed = await redeemer.getNftAddressByIndex(0);

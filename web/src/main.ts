@@ -3,7 +3,7 @@ import './style.css';
 import { Address } from '@ton/core';
 import { CHAIN, THEME, TonConnectUI, UserRejectsError, type ConnectedWallet } from '@tonconnect/ui';
 import { COLLECTION_ADDRESS, EXPLORER, GUM_DECIMALS, IS_CONFIGURED, MANIFEST_URL, NETWORK, REDEEMER_ADDRESS, VOUCHER_KINDS } from './config';
-import { buildRedeemMessage, REDEEM_TX_AMOUNT } from './payload';
+import { buildRedeemMessage, REDEEM_TX_AMOUNT, REDEEMER_MIN_TON } from './payload';
 import { getDenomination, getLastLt, getNftData, getRedeemerState, getTonBalance, getUserVouchers, type NftItem, type RedeemerState } from './tonapi';
 
 // ---------- texts (edit to translate) ----------
@@ -17,6 +17,7 @@ const T = {
     noVouchers: 'There are no Gumcoin vouchers in this wallet.',
     pool: 'Available in the pool',
     paused: 'Redemption is temporarily paused',
+    unavailable: 'Redemption is temporarily unavailable',
     notReady: 'The redeemer is not set up yet',
     youGet: 'You get',
     redeem: 'Redeem',
@@ -32,7 +33,7 @@ const T = {
     stuck: 'The voucher is at the redeemer but was not processed. Please contact support with the NFT address:',
     timeout: 'No confirmation yet. Check your wallet history and reload the page.',
     error: 'Error:',
-    feeNote: (ton: string) => `${ton} TON is attached to the transaction as the redemption fee; it is not returned. If the voucher cannot be redeemed, it comes back to your wallet.`,
+    feeNote: (ton: string) => `${ton} TON is attached to the transaction as the network fee; it is not returned. If the voucher cannot be redeemed, it comes back to your wallet.`,
     notConfigured: 'This page is not configured yet: redeemer and collection addresses are missing.',
 };
 // -----------------------------------------------
@@ -94,12 +95,14 @@ const tonConnect = new TonConnectUI({
 });
 
 let pool: RedeemerState | null = null;
+let poolTon = 0n; // the redeemer's TON: it pays redemptions from it
 const amounts = new Map<string, bigint>(); // content suffix -> GUM units
 let busy = false;
 
 async function loadPool() {
     try {
         pool = await getRedeemerState(REDEEMER_ADDRESS);
+        poolTon = await getTonBalance(REDEEMER_ADDRESS);
         for (const k of VOUCHER_KINDS) amounts.set(k, await getDenomination(REDEEMER_ADDRESS, k));
         renderPool();
     } catch (e) {
@@ -115,6 +118,7 @@ function renderPool() {
     poolBar.append(v);
     if (pool.paused) poolBar.append($('div', 'badge warn', T.paused));
     if (!pool.jettonWalletSet) poolBar.append($('div', 'badge warn', T.notReady));
+    else if (!pool.paused && poolTon < REDEEMER_MIN_TON) poolBar.append($('div', 'badge warn', T.unavailable));
 }
 
 async function render(wallet: ConnectedWallet | null) {
@@ -167,6 +171,7 @@ function card(item: NftItem, user: string, tonBalance: bigint): HTMLElement {
             if (!amount) reason = T.unknownKind;
             else if (!pool || !pool.jettonWalletSet) reason = T.notReady;
             else if (pool.paused) reason = T.paused;
+            else if (poolTon < REDEEMER_MIN_TON) reason = T.unavailable;
             else if (pool.gumBalance < amount) reason = T.poolEmpty;
             else if (tonBalance < REDEEM_TX_AMOUNT + 20_000_000n) reason = T.lowTon(fmtTon(REDEEM_TX_AMOUNT + 20_000_000n));
             why.textContent = reason;

@@ -6,22 +6,32 @@
 ;;  Holds GUM jettons and exchanges NFT vouchers (nft-voucher collection) for GUM.
 ;;
 ;;  Redemption flow (all on-chain, no backend):
-;;    1. user  -> NFT       transfer(new_owner = redeemer, response_destination = addr_none, forward_amount >= 0.15 TON)
-;;                          (no response: what is left of the attached TON stays on the NFT, i.e. goes to the redeemer
+;;    1. user  -> NFT       transfer(new_owner = redeemer, response_destination = addr_none, forward_amount ~0.015 TON)
+;;                          (no response: what is left of the attached TON stays on the NFT and goes to the redeemer
 ;;                          on burn, or back to the user inside the voucher if it is returned)
 ;;    2. NFT   -> redeemer  ownership_assigned(prev_owner)
 ;;    3. redeemer -> NFT    request_voucher_data(payload = prev_owner)
+;;         steps 2-3 are paid by the user's forward_amount (mode 64): the sender is not verified yet,
+;;         so the redeemer never spends its own TON here (a fake notification gets only its own TON back)
 ;;    4. NFT   -> redeemer  report_voucher_data(index, owner, content, payload)
 ;;         redeemer checks: sender == address of item #index of OUR collection (proves it is genuine),
 ;;                          owner == redeemer, content hash -> GUM amount
+;;         from here on the redeemer pays from its OWN balance (fixed amounts with a large margin, the unused
+;;         part always comes back to the redeemer); it is refunded by the voucher's TON on burn
 ;;    5a. OK:   redeemer -> NFT             destroy  => NFT sends its whole TON balance to the redeemer
-;;              redeemer -> own GUM wallet  transfer(amount GUM -> prev_owner) carrying the rest of the user's TON;
+;;              redeemer -> own GUM wallet  transfer(amount GUM -> prev_owner), payout_ton attached,
 ;;                                          the jetton excess comes back to the redeemer: the user gets only GUM
-;;    5b. not OK (paused / unknown kind / not enough GUM / not enough TON attached):
-;;              redeemer -> NFT             transfer back to prev_owner
+;;    5b. not OK (paused / unknown kind / not enough GUM / not enough TON on the redeemer):
+;;              redeemer -> NFT             transfer back to prev_owner, return_ton attached, excess -> redeemer
+;;              (if even that cannot be paid, the voucher stays on the redeemer for rescue_nft)
 ;;    5c. prev_owner is not a basechain wallet (a masterchain owner, or the collection itself when a voucher
 ;;        is minted straight to the redeemer): GUM cannot be paid there and the voucher cannot be sent back,
 ;;        so the voucher stays on the redeemer untouched; the owner can hand it out with rescue_nft.
+;;    A voucher is burned only together with a fully paid GUM transfer: both are sent in one action phase,
+;;    which either sends both or nothing, and the TON for both is checked before.
+;;
+;;  TON: while redemptions are active the redeemer keeps an operating reserve (withdraw_ton leaves it,
+;;  set_paused(false) requires it). When paused, everything except min_storage can be withdrawn.
 ;;
 ;;  The owner can withdraw TON and jettons at any time, pause redemptions, set GUM amounts per kind
 ;;  and rescue NFTs that were sent without forward_amount (no notification => cannot be auto-processed).
@@ -65,11 +75,14 @@ int error::not_pending_owner() asm "408 PUSHINT";
 int error::bad_address() asm "409 PUSHINT";
 int error::unknown_op() asm "0xffff PUSHINT";
 
-;; ---------- fees ----------
+;; ---------- fees (paid from the redeemer's balance; unused parts come back to the redeemer) ----------
 int jetton_transfer_ton() asm "50000000 PUSHINT";   ;; 0.05 TON attached to every withdrawal transfer
 int destroy_ton() asm "20000000 PUSHINT";           ;; 0.02 TON attached to destroy (comes back with the NFT balance)
-int min_redeem_value() asm "100000000 PUSHINT";     ;; 0.1 TON must reach the redeemer with report_voucher_data
+int payout_ton() asm "100000000 PUSHINT";           ;; 0.1 TON attached to a voucher payout (~0.003 is used, ~30x margin)
+int return_ton() asm "50000000 PUSHINT";            ;; 0.05 TON attached to a voucher return (~0.002 is used)
+int action_fees() asm "10000000 PUSHINT";           ;; 0.01 TON margin for our gas + forwarding fees of the sends
 int min_storage() asm "50000000 PUSHINT";           ;; 0.05 TON always kept on the redeemer
+int operating_reserve() asm "500000000 PUSHINT";    ;; 0.5 TON kept while not paused (pays payouts before the burn refunds)
 
 ;; ---------- query_id of the jetton transfers we send (it comes back in a bounce) ----------
 ;; voucher payout: the voucher index (< 2^63) -> restore the amount and count a failed payout
@@ -165,13 +178,13 @@ slice calc_nft_address(int index) inline {
         .end_cell(), mode);
 }
 
-;; NFT transfer (TEP-62) to `new_owner`, excess goes to `new_owner`
-() send_nft(slice nft, slice new_owner, int query_id, int value, int mode) impure inline {
+;; NFT transfer (TEP-62) to `new_owner`, excess goes to `response`
+() send_nft(slice nft, slice new_owner, slice response, int query_id, int value, int mode) impure inline {
     send_with_body_ref(nft, value, begin_cell()
         .store_uint(op::transfer(), 32)
         .store_uint(query_id, 64)
         .store_slice(new_owner)    ;; new_owner
-        .store_slice(new_owner)    ;; response_destination
+        .store_slice(response)     ;; response_destination
         .store_uint(0, 1)          ;; no custom_payload
         .store_coins(0)            ;; forward_amount
         .store_uint(0, 1)          ;; empty forward_payload
@@ -213,7 +226,7 @@ cell text_comment(slice text) inline {
         .end_cell(), 64); ;; carry remaining value of the notification
 }
 
-() on_report_voucher_data(slice nft, int msg_value, int query_id, slice in_msg_body) impure inline {
+() on_report_voucher_data(slice nft, int my_balance, int query_id, slice in_msg_body) impure inline {
     int index = in_msg_body~load_uint(64);
     slice nft_owner = in_msg_body~load_msg_addr();
     cell content = in_msg_body~load_ref();
@@ -230,29 +243,35 @@ cell text_comment(slice text) inline {
 
     (int amount, int known?) = get_denomination_amount(cell_hash(content));
 
+    ;; The voucher is genuine: from here on we pay from our own balance (`my_balance` includes this message).
     int ok? = (~ storage::paused)
             & known?
             & (~ is_addr_none(storage::jetton_wallet))
             & (storage::gum_balance >= amount)
-            & (msg_value >= min_redeem_value());
+            & (my_balance >= min_storage() + destroy_ton() + payout_ton() + action_fees());
 
     if (ok?) {
         storage::gum_balance -= amount;
         storage::redeemed_count += 1;
         save_data();
-        ;; burn: paid from our balance, the 0.02 TON comes back together with the voucher's balance
+        ;; Both messages are in one action phase (mode 1, no +2): either both are sent or none, so a voucher is
+        ;; never burned without its payout. The balance for both was checked above.
+        ;; burn: the 0.02 TON come back together with the voucher's balance
         send_with_body_ref(nft, destroy_ton(), begin_cell()
             .store_uint(op::destroy(), 32)
             .store_uint(query_id, 64)
             .end_cell(), 1);
-        ;; pay: the GUM transfer carries everything left of the user's TON (mode 64), so it does not depend
-        ;; on a fixed fee; the unused part comes back to the redeemer (response = us); query_id = voucher index
-        send_jetton_transfer(storage::jetton_wallet, index, amount, prev_owner, my_address(), text_comment("Gumcoin voucher redeemed"), 0, 64);
+        ;; pay: fixed payout_ton, the unused part comes back to us (response = us); query_id = voucher index
+        send_jetton_transfer(storage::jetton_wallet, index, amount, prev_owner, my_address(), text_comment("Gumcoin voucher redeemed"), payout_ton(), 1);
         return ();
     }
 
-    ;; cannot redeem right now -> give the voucher back (value of this message pays for it)
-    send_nft(nft, prev_owner, query_id, 0, 64);
+    ;; cannot redeem right now -> give the voucher back; the excess comes back to us, so sending a voucher
+    ;; around in a loop costs the sender and not the redeemer
+    if (my_balance >= min_storage() + return_ton() + action_fees()) {
+        send_nft(nft, prev_owner, my_address(), query_id, return_ton(), 1);
+    }
+    ;; else: the voucher stays on the redeemer, the owner can return it with rescue_nft
 }
 
 ;; ---------- entry point ----------
@@ -296,7 +315,7 @@ cell text_comment(slice text) inline {
         return ();
     }
     if (op == op::report_voucher_data()) {
-        on_report_voucher_data(sender, msg_value, query_id, in_msg_body);
+        on_report_voucher_data(sender, my_balance, query_id, in_msg_body);
         return ();
     }
     if (op == op::transfer_notification()) {
@@ -345,20 +364,24 @@ cell text_comment(slice text) inline {
     }
     if (op == op::set_paused()) {
         storage::paused = in_msg_body~load_int(1);
+        ;; redemptions are paid from our balance: do not start them without the operating reserve
+        throw_unless(error::not_enough_ton(), storage::paused | (my_balance - msg_value >= operating_reserve()));
         save_data();
         return ();
     }
     if (op == op::withdraw_ton()) {
-        int amount = in_msg_body~load_coins(); ;; 0 = everything except min_storage
+        ;; while redemptions are active keep the operating reserve; when paused, only min_storage
+        int keep = storage::paused ? min_storage() : operating_reserve();
+        int amount = in_msg_body~load_coins(); ;; 0 = everything except `keep`
         if (amount == 0) {
-            raw_reserve(min_storage(), 0);
+            raw_reserve(keep, 0);
             send_raw_message(begin_cell()
                 .store_uint(0x10, 6).store_slice(storage::owner).store_coins(0)
                 .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
                 .store_uint(op::excesses(), 32).store_uint(query_id, 64)
                 .end_cell(), 128);
         } else {
-            throw_unless(error::not_enough_ton(), my_balance - msg_value - amount >= min_storage());
+            throw_unless(error::not_enough_ton(), my_balance - msg_value - amount >= keep);
             send_raw_message(begin_cell()
                 .store_uint(0x10, 6).store_slice(storage::owner).store_coins(amount)
                 .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
@@ -396,7 +419,7 @@ cell text_comment(slice text) inline {
     if (op == op::rescue_nft()) {
         slice nft = in_msg_body~load_msg_addr();
         slice to = in_msg_body~load_msg_addr();
-        send_nft(nft, to, query_id, 0, 64);
+        send_nft(nft, to, to, query_id, 0, 64);
         return ();
     }
     if (op == op::propose_owner()) {
