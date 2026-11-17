@@ -92,6 +92,7 @@ describe('VoucherRedeemer', () => {
 
     beforeEach(async () => {
         blockchain = await Blockchain.create();
+        blockchain.now = 1_800_000_000; // frozen clock: no storage fee between transactions, so TON checks are exact
         admin = await blockchain.treasury('admin');
         alice = await blockchain.treasury('alice');
         bob = await blockchain.treasury('bob');

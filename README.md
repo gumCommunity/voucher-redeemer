@@ -65,8 +65,11 @@ comes back with the burn, so it needs a balance:
 
 Spam does not cost the redeemer anything: a fake `ownership_assigned` gets only its own TON back (the request is paid with
 mode 64 from the notification), a forged report is rejected, and a voucher sent back (paused, unknown kind) returns its
-excess to the redeemer, so sending it around in a loop costs the sender ~0.03 TON per round. All of this is covered by
-tests.
+excess to the redeemer, so sending it around in a loop costs the sender ~0.03 TON per round. `tests/Attacks.spec.ts`
+runs every attack we could think of (fake notifications and reports, replays, forged deposits and bounces, double
+redemption, two reports before a burn refund, huge payloads, empty vouchers from a leaked minting key, foreign
+collections, owner operations from a stranger) and checks after each one that the counted GUM match the wallet, the
+attacker gets nothing, no payout failed and the redeemer's TON did not go down.
 
 ## GUM
 
