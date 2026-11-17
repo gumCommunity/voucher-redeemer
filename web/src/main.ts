@@ -99,6 +99,14 @@ let poolTon = 0n; // the redeemer's TON: it pays redemptions from it
 const amounts = new Map<string, bigint>(); // content suffix -> GUM units
 let busy = false;
 
+// Cards wait for this before reading `amounts`: otherwise a voucher whose on-chain data arrives
+// before the denominations would be shown as "not accepted".
+let poolReady: Promise<void> = Promise.resolve();
+function refreshPool(): Promise<void> {
+    poolReady = loadPool();
+    return poolReady;
+}
+
 async function loadPool() {
     try {
         pool = await getRedeemerState(REDEEMER_ADDRESS);
@@ -163,8 +171,8 @@ function card(item: NftItem, user: string, tonBalance: bigint): HTMLElement {
     el.append(img, body);
 
     // find the voucher kind on-chain (exactly what the redeemer checks)
-    getNftData(item.address)
-        .then(({ contentSuffix }) => {
+    Promise.all([getNftData(item.address), poolReady])
+        .then(([{ contentSuffix }]) => {
             const amount = amounts.get(contentSuffix) ?? 0n;
             get.textContent = amount ? `${T.youGet}: ${fmtGum(amount)} GUM` : T.unknownKind;
             let reason = '';
@@ -201,7 +209,7 @@ async function redeem(item: NftItem, user: string, amount: bigint, btn: HTMLButt
         else if (result === 'returned') showNotice(T.returned, 'warn');
         else if (result === 'stuck') showNotice(T.stuck, 'err', nftLink);
         else showNotice(T.timeout, 'warn', nftLink);
-        await loadPool();
+        await refreshPool();
         await render(tonConnect.wallet as ConnectedWallet | null);
     } catch (e) {
         if (e instanceof UserRejectsError) showNotice(T.rejected, 'warn');
@@ -245,7 +253,7 @@ if (!IS_CONFIGURED) {
     footer.remove();
 } else {
     hideNotice();
-    loadPool();
+    refreshPool();
     tonConnect.onStatusChange((w) => render(w));
     tonConnect.connectionRestored.then(() => {
         if (!tonConnect.wallet) render(null);
